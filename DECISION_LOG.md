@@ -336,3 +336,83 @@ in this decision.
 - DEC-001 is amended (below) with a cross-reference; DEC-002 is
   unaffected (it concerns Dolt branch auth, not filesystem
   visibility).
+
+---
+
+### DEC-007: bubblewrap as Phase 1 sandbox primitive (2026-05-05)
+
+**Decision:** Phase 1 ships the `claude-sandbox` wrapper as a thin
+shell over [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`). The wrapper is rootless (no sudoers entry, no privileged
+helper script) and uses bwrap's allow-list semantics to implement
+DEC-006 directly. The previously-planned hand-rolled `unshare --mount`
++ `sudo -u claude-session` design is dropped.
+
+**Context:** ClaudeConfig-40s.7 evaluated bwrap against the four
+Phase 1 acceptance criteria and validated all of them (POC at
+`.tasks/40s.7-bwrap-eval/poc-wrapper.sh`):
+
+- `claude --version` and `claude -p "..."` both succeed inside the
+  sandbox (OAuth round-trip works).
+- 13 enumerated credential paths are structurally invisible without
+  an explicit deny-list.
+- Memory write-back to `~/.claude/projects/<hash>/` works through a
+  read-write bind.
+- `--clearenv` strips inherited credentials cleanly; explicit
+  `--setenv` covers what the session needs (HOME, USER, PATH, TERM,
+  LANG).
+
+**Alternatives:**
+
+- *Hand-rolled `unshare --mount` + sudoers + privileged helper.*
+  Rejected: bwrap implements the same kernel mechanism with a much
+  smaller wrapper surface and no privileged components. The unshare
+  approach offered no capability bwrap doesn't already cover.
+- *Container runtime (Docker, Podman, systemd-nspawn).* Rejected per
+  DEC-006: per-invocation startup overhead, image management
+  complexity, and host-tooling integration cost are wrong fits for
+  wrapping every interactive Claude session.
+
+**Consequences:**
+
+- **Phase 1 components reduced.** ClaudeConfig-40s.2 (privileged
+  setup + sudoers) and J121-ft3 (claude-session user provisioning)
+  are deferred pending the user-model follow-up (see "Open follow-up"
+  below); they may close permanently or re-emerge in a different
+  shape. ClaudeConfig-40s.4 narrows to the profile YAML alone
+  (ACLs deferred under the same follow-up).
+- **WSL2 quirk to document.** `/etc/resolv.conf` is a symlink to
+  `/mnt/wsl/resolv.conf` on WSL2 hosts; the wrapper must
+  `--ro-bind /mnt/wsl /mnt/wsl` for DNS resolution. Linux-native
+  hosts skip this. Cross-platform support (VISION future scope) needs
+  to handle this conditionally — the POC has the pattern.
+- **`bd` from inside the sandbox is out of scope until Phase 5.**
+  Reaching the host's Dolt server requires `BEADS_DOLT_PASSWORD` in
+  env, which is exactly DEC-001's anti-pattern. Phase 5's
+  `bd-claude-session` Dolt user is the proper resolution.
+- **Telemetry compliance gap.** Claude's OTEL exporter fails to reach
+  its target inside the sandbox (`FailedToOpenSocket`,
+  `ECONNREFUSED`). BOCO IT uses New Relic for developer-usage
+  telemetry; running sandboxed sessions invisible to that telemetry
+  is a compliance concern. See "Open follow-up" below.
+
+**Open follow-up (each warrants its own bead and possibly its own DEC):**
+
+1. *User-model decision.* Same-UID (POC default) is simplest but
+   gives no UID-level audit trail or filesystem permission backstop.
+   Two non-trivial alternatives: (A) provision a real `claude-session`
+   user account at install, run bwrap with `--uid`/`--gid` mapping or
+   via `sudo -u claude-session`; (B) configure `/etc/subuid` for the
+   user's range and use bwrap user namespaces to map UIDs without a
+   real account. (A) yields readable audit trails and clean OAuth
+   identity continuity at the cost of one-time provisioning; (B) is
+   rootless and lighter but has opaque high-range UIDs in logs. If
+   (A) is adopted, ACLs for `~/.claude/projects/` re-enter Phase 1
+   scope (per the original DEC-001 design), and J121-ft3 / 40s.2
+   come back in modified forms.
+2. *New Relic telemetry.* DEC-001 prohibits credentials in the
+   sandbox; New Relic's OTEL endpoint requires a license key. The
+   damage radius of a leaked telemetry-ingest key is small (fake
+   telemetry, not data exfiltration), so a bounded exception or a
+   host-side telemetry sidecar are both viable. Decision deferred
+   pending IT alignment.
