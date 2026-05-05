@@ -26,6 +26,52 @@ What the sandbox is, what it isn't. The core invariants: separate user,
 mount namespace, stripped environment, bind-mounted repo, profile-driven
 visible context.
 
+### Permission prompts vs OS-level sandboxing
+
+Claude Code's per-tool permission prompts and `claude-sandbox`'s
+bwrap-based isolation are two layers of the same defense — "limit what
+Claude can do" — operating at different levels:
+
+- **Prompts are application-layer checks.** Each tool invocation
+  matches an allowlist or surfaces a blocking prompt. Cheap to add,
+  but rely on the user being available to approve legitimate
+  operations and on the prompt logic itself remaining unbypassable.
+  Recent CVE history (50-subcommand bypass, settings-pre-trust
+  bypass) shows the prompt model has had real holes.
+- **The bwrap sandbox is OS-layer enforcement.** Filesystem
+  visibility (DEC-006 allow-list), credential exposure (DEC-008
+  tiered policy), and identity (DEC-009 separate `claude-session`
+  OAuth) are bounded by the kernel and the namespace, regardless of
+  what the agent tries to do. A prompt-bypass CVE doesn't compromise
+  the sandbox boundary.
+
+Once Phase 1 ships, **the bwrap sandbox subsumes most of what per-tool
+prompts protect against.** Inside a sandboxed session, the prompt
+model is largely redundant because the kernel enforces what the
+prompt would have checked. Specifically:
+
+- **Phase 6+ autosession daemons (workers, reviewers)** should run
+  with `--dangerously-skip-permissions` *inside* the sandbox.
+  Per-tool friction during autonomous execution defeats the purpose
+  of an unattended swarm; the sandbox boundary remains the actual
+  trust boundary, so prompt-skipping inside it is safe by
+  construction.
+- **Interactive sandboxed sessions** can also relax prompts (run
+  with broader allowlists, or with `--dangerously-skip-permissions`
+  for fully-trusted workflows) once the sandbox visibly bounds the
+  blast radius. The user decides per profile.
+
+Outside the sandbox (sessions invoked via `claude` directly,
+bypassing `claude-sandbox`, or sessions running before Phase 1
+ships), prompts remain the trust boundary and should be respected.
+
+This composition principle is also why the spawn-agents pre-flight
+convention matters less for sandboxed agents than for host-side
+agents: a sandboxed worker that hits an unexpected `WebFetch` domain
+isn't taking a host-level risk — the sandbox already constrains what
+the response can do — so the convention's batch-approve-up-front
+pattern can be relaxed there.
+
 ### Sandbox awareness for sessions
 
 How to tell whether a Claude session is running inside the sandbox.

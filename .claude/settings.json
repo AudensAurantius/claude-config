@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(bd show *)",
+      "Bash(bd list *)",
+      "Bash(bd memories *)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
       {
