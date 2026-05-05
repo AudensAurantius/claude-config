@@ -571,3 +571,111 @@ arrangement as the canonical tier-1 reference example.
 - Token rotation requires the same first-run ceremony; not
   automated. Acceptable for now given expected rotation cadence
   (rare; only on suspected compromise).
+
+---
+
+### DEC-010: Escape-hatch mechanism for sharing user credentials with `claude-session` (2026-05-05)
+
+**Decision:** When a tier-1-eligible credential cannot be cleanly
+issued to a separate principal at the upstream service (e.g.,
+Atlassian's user-bound API tokens before a service account exists),
+the user-owned credential may be shared with `claude-session` via a
+documented escape-hatch script: `sandbox/scripts/share-credential.sh`.
+The default mechanism is a static copy with chown + chmod 600 +
+optional GPG encryption-at-rest (option a). A bind-mount-with-ACL
+mechanism (option b) is available as an explicit exception for
+credentials that rotate externally and frequently. In all cases,
+the shared credential is still tier-1 per DEC-008 and still requires
+its own DEC entry recording the rationale, scope, and damage-radius
+assessment.
+
+**The two mechanisms:**
+
+- **Option (a) — `share-credential.sh` (default):**
+
+  ```bash
+  sandbox/scripts/share-credential.sh \
+      <hactar-source-path> \
+      <claude-session-relative-target> \
+      [--encrypt]
+  ```
+
+  Steps: copy `<source>` to `/home/claude-session/<target>`; chown
+  to `claude-session:claude-session`; chmod 600; if `--encrypt`,
+  GPG-encrypt to claude-session's public key and remove the
+  plaintext copy.
+
+  Audit attestation: `claude-session`'s GPG public key is signed by
+  `hactar`'s personal key. The signature *is* the cryptographic
+  record that hactar deliberately authorized claude-session to hold
+  this credential.
+
+- **Option (b) — bind-mount with ACL (exception):**
+
+  Profile YAML accepts a `shared_credentials.bind_mounts:` field
+  (empty by default). Entries are paths in `hactar`'s home that
+  receive an ACL granting `claude-session` read access; the wrapper
+  bind-mounts each into the sandbox at session start.
+
+  Reserved for credentials that rotate frequently and externally
+  (cloud SSO refresh tokens, `pass`-managed entries that change
+  behind the scenes). Discouraged because principal separation at
+  the filesystem level is fuzzy — claude-session reads hactar's
+  inode via ACL, and audit at filesystem level shows two principals
+  reading the same file.
+
+**Friction is structural.** Per DEC-008, every tier-1 credential
+addition requires its own DEC entry. The DEC entry for a
+shared-mechanism credential must additionally justify *why* the
+credential cannot be issued to a separate principal at the upstream
+service (e.g., "Atlassian's API tokens are user-bound; service
+account pursuit blocked on IT response — see ClaudeConfig-40s.10").
+
+**Context:** The user-model decision (DEC-007 follow-up #1, A2 path)
+gave `claude-session` its own UID and home directory, enabling
+upstream-service provisioning of credentials directly to that
+principal. But not every upstream service supports separate
+principals (Atlassian being the prompt for this DEC). Without an
+escape hatch, those services would either be unreachable from
+sandboxed sessions or would force degenerate workarounds (binding
+hactar's full home, defeating DEC-006). The escape hatch carves out
+a narrow exception path with explicit policy.
+
+**Alternatives:**
+
+- *Option (b) as default; option (a) as exception.* Rejected: option
+  (b)'s live-rotation property is nice for the few cases where it
+  fits, but as a default it loses the principal-separation property
+  that motivates the user-model decision. Audit at filesystem level
+  becomes "claude-session reads hactar's file" which compromises
+  the audit clarity argument from Q1.
+- *Direct env-var injection.* Rejected: this is exactly DEC-001's
+  anti-pattern. Even with damage-radius bounds (DEC-008), env-var
+  injection makes the credential visible to any subprocess and to
+  any tool that dumps env. The on-disk copy under
+  `claude-session`'s home is more contained.
+- *No escape hatch; force the user to wait for upstream
+  service-account provisioning.* Rejected: the wait can be
+  open-ended (BOCO IT timeline for service-account requests is
+  weeks-to-months) and blocks legitimate sandbox functionality
+  during the wait. The escape hatch with structural friction is a
+  better tradeoff than blocking.
+
+**Consequences:**
+
+- Implementation lands in `sandbox/scripts/share-credential.sh`,
+  tracked by ClaudeConfig-40s.11.
+- Phase 2 profile YAML schema (ClaudeConfig-a92.1) must accept the
+  `shared_credentials.bind_mounts:` field for option-b cases. Empty
+  by default; populated entries trigger ACL setup at install.
+- Each shared credential's DEC entry is structured per DEC-008's
+  tier-1 requirements *plus* the shared-mechanism justification
+  paragraph.
+- Encryption-at-rest via GPG is optional. Real win: backup snapshots
+  of `/home/claude-session/` don't leak plaintext credentials. Not
+  a runtime defense — claude-session necessarily has the GPG private
+  key in its keyring at session time.
+- The GPG signing chain (claude-session's key signed by hactar's)
+  is documented as a recommended setup but not enforced by the
+  script. Lowering enforcement here matches the discouraged-but-
+  possible character of the escape hatch as a whole.
