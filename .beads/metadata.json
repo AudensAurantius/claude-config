@@ -2,6 +2,7 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
+  "dolt_server_user": "claude-config",
   "dolt_database": "ClaudeConfig",
   "project_id": "d32192a3-a8de-49e6-9097-9291ba574715"
 }

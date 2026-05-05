@@ -54,3 +54,10 @@
 # - github.repo
 
 sync.remote: "git+ssh://git@github.com/AudensAurantius/claude-config"
+
+dolt.auto-commit: "batch"
+
+no-push: true
+
+backup:
+  git-push: false
