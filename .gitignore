@@ -3,3 +3,6 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Local environment (machine-specific secrets and paths)
+.envrc
