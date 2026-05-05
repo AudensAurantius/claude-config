@@ -416,3 +416,158 @@ Phase 1 acceptance criteria and validated all of them (POC at
    telemetry, not data exfiltration), so a bounded exception or a
    host-side telemetry sidecar are both viable. Decision deferred
    pending IT alignment.
+
+---
+
+### DEC-008: Tiered credential policy for sandboxed sessions (2026-05-05)
+
+**Decision:** Sandboxed sessions hold credentials drawn from three
+tiers, with explicit eligibility criteria for the least-restrictive
+tier and supersession of DEC-001's binary framing. Tier classification
+governs *how* a credential reaches the sandbox; tier-1 credentials
+require their own DECISION_LOG entry establishing eligibility.
+
+**The three tiers:**
+
+| Tier | Credential character | Mechanism | Examples |
+|---|---|---|---|
+| **1. Owned by `claude-session`** | Bounded damage radius; provisioned to the sandbox identity directly | Lives in `claude-session`'s home, bound naturally into the sandbox at session start | Anthropic OAuth (DEC-009); New Relic ingest key; readonly Jira service-account token |
+| **2. Mediated via host sidecar** | Medium damage radius; the host process holds the credential and exposes a constrained interface to the sandbox | Unix socket bound into the sandbox; host daemon translates sandbox requests into authenticated API calls | (none yet — reserved for executor pattern; DEC-003 is the formalization) |
+| **3. Recommend-and-execute** | High damage radius (production state mutation, broad-scope external auth, persistent infrastructure changes) | Agent generates a paste-ready command; human (or, eventually, DEC-003 executor) runs it | Snowflake JWT, ADO PAT, AWS keys, SSH keys, prod deploys |
+
+**Tier-1 eligibility criteria.** A credential is eligible for tier 1
+only if ALL four of the following hold:
+
+1. **Bounded damage radius.** A leaked instance, used adversarially,
+   produces consequences at worst recoverable nuisance: fake
+   telemetry, wasted API spend, information disclosure scoped to
+   data the sandbox legitimately needs to read anyway. No production
+   data mutation. No persistent state changes requiring human cleanup.
+2. **Separate provisioning from `hactar`.** The credential is issued
+   to the `claude-session` principal at the upstream service — not
+   borrowed from `hactar`'s account. An exception path exists for
+   credentials that cannot be issued to a separate principal (see
+   DEC-NNN escape-hatch), but tier-1 by default means "claude-session
+   has its own."
+3. **Documented in a DECISION_LOG entry.** Each tier-1 credential
+   gets its own DEC entry recording: scope, damage-radius assessment,
+   provisioning mechanism, rotation procedure. Adding a tier-1
+   credential is a deliberate act logged in the decision history.
+4. **Rotation procedure exists and is tested.** If the credential
+   cannot be rotated cleanly when leaked, it does not belong in
+   tier 1.
+
+**Context:** DEC-001's original framing — "no credentials in the
+sandbox" — was binary and didn't survive contact with reality. The
+moment we said "Anthropic OAuth stays" we had a credential, in the
+sandbox, doing privileged work; DEC-001 hand-waved the exception with
+"it's the agent's identity, not a credential to spend on the user's
+behalf." That's a real distinction but the binary wording obscured
+it. The tiered policy makes the actual structure explicit: some
+credentials must be in the sandbox (tier 1), some pass through a
+mediator (tier 2), some never enter (tier 3). Each tier comes with a
+defined mechanism and a defined damage budget.
+
+The tiered model also re-anchors DEC-002 (branch-restricted Dolt
+auth) cleanly — `bd-claude-session` is just another tier-1 credential
+once that infrastructure ships.
+
+**Alternatives:**
+
+- *Keep DEC-001's binary framing; treat OAuth as "not a credential."*
+  Rejected: the framing was already false, and pretending otherwise
+  invites accidents the next time a "low-risk" credential is added
+  outside the framework.
+- *Single-tier "no credentials except OAuth" as a one-off exception.*
+  Rejected: the New Relic telemetry conversation already produced a
+  second exception candidate; we'd be back to ad-hoc framework gaps
+  on the next ask.
+- *Looser policy permitting any credential the user wants.* Rejected:
+  the sandbox loses its central security property. The criteria
+  above are the line that distinguishes "principled exception" from
+  "drift."
+
+**Consequences:**
+
+- **DEC-001 superseded for credentials policy specifically.** DEC-001
+  retains its core principle (the human is the final-mile authority
+  for privileged operations against external systems) but the
+  "agents do not hold credentials" line is replaced by the tiered
+  scheme above. DEC-001's original alternatives-considered section
+  remains historically accurate.
+- **Each tier-1 credential addition costs a DEC entry.** This is
+  deliberate friction. The cost is the policy's enforcement
+  mechanism.
+- **Tier-2 awaits Phase 7.** DEC-003's privileged-action executor is
+  the reference implementation of tier-2; until it ships, no
+  credentials are in tier 2. Telemetry sidecar (option 2 of DEC-007
+  open follow-up #2) is a tier-2 candidate but currently slated for
+  tier 1 instead per the New Relic damage-radius assessment.
+- **Escape-hatch mechanism.** A separate DEC entry will record the
+  user's-credentials-shared-with-claude-session escape hatch
+  (`share-credential.sh` with chown + chmod 600 + optional GPG
+  encryption-at-rest). Tier-1-by-shared-mechanism remains tier 1
+  policy-wise; it just acknowledges that some credentials cannot be
+  cleanly issued to a separate principal at the upstream service
+  (e.g., personal Atlassian tokens before a service account is
+  provisioned).
+
+---
+
+### DEC-009: Tier-1 credential — Anthropic OAuth for `claude-session` (2026-05-05)
+
+**Decision:** `claude-session` holds its own Anthropic OAuth refresh
+token, distinct from `hactar`'s personal identity, in
+`/home/claude-session/.claude/.credentials.json`. The token is
+provisioned via a one-time interactive browser OAuth flow on the
+first sandboxed invocation after install.
+
+**Tier-1 eligibility (per DEC-008):**
+
+1. *Bounded damage radius.* A leaked refresh token spends Anthropic
+   API credit on the BOCO subscription's `claude-session` identity.
+   Cap: detectable via Anthropic billing dashboards, revocable via
+   Anthropic console, no access to other systems or persistent
+   state.
+2. *Separate provisioning from hactar.* `claude-session` does its
+   own browser OAuth flow at first run; `hactar`'s OAuth identity
+   is unrelated.
+3. *Documented in DECISION_LOG.* This entry.
+4. *Rotation procedure.* Revoke `claude-session`'s OAuth in the
+   Anthropic console; re-run the first-run OAuth ceremony. Tested
+   pre-Phase-1-ship.
+
+**Context:** The architecture transcript called out that `HOME`
+placement decides which OAuth identity Claude Code uses
+(`${HOME}/.claude/.credentials.json` is the lookup path). Under the
+A2 user-model decision (DEC-007 follow-up + bead J121-ft3), the
+sandbox's HOME points to `/home/claude-session`, so the OAuth
+credential is naturally on a separate identity. This DEC records that
+arrangement as the canonical tier-1 reference example.
+
+**Alternatives:**
+
+- *Bind `hactar`'s `~/.claude/.credentials.json` into the sandbox.*
+  Rejected: shares the user's interactive Anthropic identity with
+  the agent; muddies audit trails (Anthropic's logs can't tell
+  hactar-as-human apart from hactar-as-agent), and rotating hactar's
+  personal token would force re-authentication of every agent
+  session.
+- *Run sandboxed sessions without OAuth, generating recommendations
+  for the human to execute.* Rejected: defeats the purpose of
+  running Claude in the sandbox at all. The point is that Claude
+  IS executing; the OAuth is its identity for that execution.
+
+**Consequences:**
+
+- The first-run experience requires the user to complete a browser
+  OAuth flow inside the sandboxed session. Documented in the Phase 1
+  smoke-test bead (ClaudeConfig-40s.6).
+- The `claude-session` identity should be visible in BOCO's Anthropic
+  account as a distinct seat or service-account-style entry, if the
+  subscription model supports it. If not, it shows as another
+  authenticated session under the same account; that's acceptable
+  but worth noting for visibility.
+- Token rotation requires the same first-run ceremony; not
+  automated. Acceptable for now given expected rotation cadence
+  (rare; only on suspected compromise).
