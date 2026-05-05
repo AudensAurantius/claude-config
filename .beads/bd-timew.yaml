@@ -1,0 +1,20 @@
+# bd-timew per-project sidecar — maps Beads issue labels to a billing tuple.
+#
+# Resolution order (first match wins):
+#   1. Per-issue `case:<string>` label on the bead (escape hatch)
+#   2. First matching pattern in `patterns:` below (regex on space-joined labels)
+#   3. The `default:` block below
+#
+# Run `bd-timew resolve <bead-id>` to dry-run resolution for any bead.
+#
+# This project is partially billable: time tracked against it bills to
+# BOCO's AI Innovation initiative as an overflow buffer for ensuring
+# weekly billable hours. Track everything by default; the human filters
+# which intervals to submit at end-of-week.
+
+default:
+  client: "PRJ001125 BOCO : BOCO : BOCO : BOCO AI Innovation"
+  case:   "01_AI Innovation (Project Task)"
+  svc:    "Technology Services"
+
+patterns: []

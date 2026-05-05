@@ -58,6 +58,12 @@ walks away with full access to whatever those credentials unlock.
   ad-hoc human-in-the-loop forever.
 - A future "command-recommender" skill formalizes the recommendation
   format so agents produce paste-ready output reliably.
+- *Amended 2026-05-05 by DEC-006.* The "control filesystem visibility"
+  language above is policy-direction-neutral. DEC-006 records the
+  choice of allow-list (positive enumeration of bind mounts against
+  an empty default) over deny-list (enumerate-and-shadow sensitive
+  paths). Profile YAML schema accordingly contains no `shadow_tmpfs:`
+  or equivalent deny-list keys.
 
 ---
 
@@ -261,3 +267,72 @@ integration grows into its own project).
 - The `migrate-to:` label cluster supports later batch operations:
   `bd export --label=migrate-to:bd-timew` produces the migration set
   cleanly when the destination repo is ready.
+
+---
+
+### DEC-006: Sandbox visibility uses allow-list policy, not deny-list (2026-05-05)
+
+**Decision:** Sandboxed sessions see a default-empty filesystem; profiles
+bind in only the paths the session needs. The active profile's
+visibility configuration is a positive enumeration of read-only and
+read-write bind mounts against an empty default. There is no
+"shadow-list of sensitive paths" to maintain — the entire host
+filesystem (or at minimum the user's home + every system path not
+explicitly required) is invisible by default, and only the profile's
+explicit binds appear inside the namespace.
+
+**Context:** Initial Phase 1 sketching implied a deny-list shape: a
+list of credential directories (`~/.config/snowflake/`,
+`~/.password-store/`, `~/.aws/`, `~/.ssh/`, etc.) shadow-mounted with
+empty tmpfs while the rest of the home directory remained visible.
+Drafting `sandbox/profiles/default.yaml` for ClaudeConfig-40s.4
+surfaced the brittleness of that approach: new tools install new
+credential paths constantly (`~/.cargo/credentials.toml`,
+`~/.git-credentials`, `~/.local/share/keyrings/`,
+`~/.terraform.d/credentials.tfrc.json`, the next tool installed
+tomorrow). A miss in the deny-list is a permanent credential leak with
+no detection mechanism. The same kernel mechanism (mount namespaces)
+supports either policy direction; the choice of *which* default lives
+in this decision.
+
+**Alternatives:**
+
+- *Enumerate-and-deny* (the original framing). Rejected: brittle,
+  requires perpetual maintenance to keep current with new tools, and
+  silent failures are credential leaks. The cost of a single miss
+  exceeds the operational benefit of having a permissive default.
+- *Switch to a container runtime (Docker, Podman, systemd-nspawn) for
+  the whitelist property.* Containers offer this property natively
+  because they construct a fresh root via `pivot_root` rather than
+  inheriting the host's mount tree. Rejected for *this* workload: per-
+  invocation startup overhead is noticeable for an interactive Claude
+  wrapper; image-management complexity is high; host-tooling
+  integration (`bd`, `bd-timew`, `claude-mem`, `chezmoi`, `pass`,
+  `git`, `gh`, etc.) is heavy enough that the bind-mount enumeration
+  problem just inverts (now we enumerate what to expose). The
+  whitelist property is achievable inside the namespace architecture
+  without the container-runtime tax.
+
+**Consequences:**
+
+- Profile YAML structure has no `shadow_tmpfs:` key. Profiles are an
+  allow-list of `read_only:` and `read_write:` bind specs against an
+  empty default. The Phase 2 schema design (ClaudeConfig-a92.1) takes
+  this as a hard constraint.
+- "List of sensitive paths to hide" disappears from documentation. It
+  is replaced by "list of paths the active profile exposes."
+- ClaudeConfig-40s.4 (default profile + ACLs) work was halted mid-
+  draft 2026-05-05 because the YAML encoded the wrong default. Work
+  resumes after ClaudeConfig-40s.7 (bubblewrap evaluation) lands; the
+  YAML is rewritten with the allow-list policy regardless of which
+  primitive we end up using.
+- This decision is independent of the bubblewrap-vs-unshare choice
+  (ClaudeConfig-40s.7 / future DEC-007). The allow-list policy is
+  required either way; bubblewrap is one implementation that bakes
+  it in natively, but a hand-rolled `unshare --mount` wrapper can
+  achieve the same property by tmpfs'ing `/home/<user>` (and other
+  inherited mount roots) up front and bind-mounting back what's
+  permitted.
+- DEC-001 is amended (below) with a cross-reference; DEC-002 is
+  unaffected (it concerns Dolt branch auth, not filesystem
+  visibility).

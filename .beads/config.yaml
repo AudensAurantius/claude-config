@@ -57,7 +57,6 @@ sync.remote: "git+ssh://git@github.com/AudensAurantius/claude-config"
 
 dolt.auto-commit: "batch"
 
-no-push: true
+backup.git-push: false
 
-backup:
-  git-push: false
+dolt.auto-push: false
