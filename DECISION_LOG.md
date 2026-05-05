@@ -196,3 +196,68 @@ content like the user's personal CLAUDE.md.
 - The CLAUDE.md marker-block content stays short — sandbox awareness
   + a pointer to `docs/SANDBOX_GUIDE.md` — so the canonical user-
   facing config remains user-controlled.
+
+---
+
+### DEC-005: Bead label clusters and infrastructure-priority elevation (2026-05-05)
+
+**Decision:** Beads in this project carry one of four `scope:` labels —
+`scope:infrastructure`, `scope:research`, `scope:review`,
+`scope:skills` — categorizing the kind of concern the bead addresses.
+Beads destined for migration to a future dedicated bd instance carry a
+`migrate-to:<repo>` label. Phase-tagged work additionally carries
+`area:phaseN` (1–7) labels matching the
+[`docs/ROADMAP.md`](docs/ROADMAP.md) phase structure. Beads tagged
+`scope:infrastructure` receive elevated priority (P1–P2) over beads in
+other scopes (P3–P4) regardless of their position in the dependency
+graph.
+
+**Context:** The migration of beads from J121 to claude-config produced
+a heterogeneous queue: sandbox infrastructure work, plugin evaluations,
+audit tasks, and skills authoring all share the same priority space.
+The existing `area:*` labels capture topic but not concern-category, so
+`bd ready` surfaces unrelated work classes interleaved. A `scope:`
+cluster gives `bd list --label=scope:<x>` and `bd ready --label=...`
+queries that match how the work is actually organized in the project's
+roadmap.
+
+The infrastructure-priority elevation rule reflects that Phase 1+
+deliverables are the project's reason for existing — skills and
+research are valuable but secondary. Even when an infrastructure bead
+is blocked by a non-infrastructure dependency, its priority remains
+high so that when it unblocks, it surfaces above the rest. (`bd ready`
+filters out blocked beads; priority orders the ready set.)
+
+The `migrate-to:<repo>` label cluster is forward-leaning: bd-timew is
+the first repo expected to receive its own bd instance, but the same
+pattern fits future extractions (e.g., `migrate-to:bd-tasks` if dstask
+integration grows into its own project).
+
+**Alternatives:**
+
+- *Use `area:` labels for concern-category.* Rejected: `area:` is already
+  saturated with topic labels (`area:claude`, `area:beads`, `area:tooling`,
+  `area:workflow`, etc.) and treating it as a category space conflates
+  topic with concern. Topic and category are independent dimensions;
+  separate label clusters keep them queryable independently.
+- *Use `type:` labels.* Rejected: `type:` is a bd-native field
+  (bug/feature/task/epic), not a free-form label space. Overloading it
+  would break native filters.
+- *Encode category in priority alone (P1 = infrastructure, P3 = research,
+  etc.).* Rejected: priority is a single dimension and other meaningful
+  variation (urgency, risk) wants the same axis. Separating "what kind
+  of work" from "how urgent" preserves both.
+
+**Consequences:**
+
+- New beads in this project must carry exactly one `scope:` label.
+  `bd lint`-style auditing (when implemented) should warn on missing
+  scope labels.
+- The infrastructure-priority elevation is a manual convention, not
+  enforced by bd. New `scope:infrastructure` beads are created at P1–P2;
+  others default to P3.
+- `bd ready --label=scope:infrastructure` becomes the default first-pass
+  query for "what to do next on the project's core deliverables."
+- The `migrate-to:` label cluster supports later batch operations:
+  `bd export --label=migrate-to:bd-timew` produces the migration set
+  cleanly when the destination repo is ready.
