@@ -40,7 +40,7 @@ set -euo pipefail
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
 PROFILE_NAME="default"
-PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-/usr/local/share/claude-sandbox/profiles}"
+PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
 
 usage() {
     sed -n '/^# claude-sandbox/,/^# Behavior/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
