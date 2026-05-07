@@ -3,7 +3,20 @@
     "allow": [
       "Bash(bd show *)",
       "Bash(bd list *)",
-      "Bash(bd memories *)"
+      "Bash(bd memories *)",
+      "Bash(bd update --claim *)",
+      "Bash(bd update --status=* *)",
+      "Bash(bd close *)",
+      "Bash(bd dep add *)",
+      "Bash(bd-timew start *)",
+      "Bash(bd-timew stop)",
+      "Bash(bd-timew resolve *)",
+      "Bash(git worktree *)",
+      "Bash(getfacl *)",
+      "Bash(bash -n *)",
+      "Bash(mkdir -p sandbox/*)",
+      "Bash(mkdir -p .tasks/*)",
+      "Bash(chmod +x sandbox/*)"
     ]
   },
   "hooks": {
