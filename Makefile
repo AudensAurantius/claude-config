@@ -13,9 +13,11 @@
 #   PROFILE_DIR   profile destination (default $(USER_CONFIG)/claude-sandbox/profiles)
 #
 # Targets:
-#   make install              install all Phase 1 components
+#   make install              install all Phase 1 components (files only)
+#   make provision            create claude-session user + subuid + ACLs (sudo)
+#   make unprovision          reverse `make provision` (sudo)
 #   make install-test         install to PREFIX=/tmp/claude-sandbox-test (no real deploy)
-#   make uninstall            remove installed files
+#   make uninstall            remove installed files (does NOT unprovision)
 #   make verify               sanity-check the installed setup
 #   make help                 show this help
 
@@ -35,7 +37,10 @@ PROFILE_DST := $(PROFILE_DIR)/default.yaml
 ACL_SCRIPT_SRC := sandbox/scripts/setup-claude-session-acls.sh
 ACL_SCRIPT_DST := $(SHARE_DIR)/scripts/setup-claude-session-acls.sh
 
-INSTALLED_FILES := $(WRAPPER_DST) $(PROFILE_DST) $(ACL_SCRIPT_DST)
+PROVISION_SRC  := sandbox/scripts/provision-claude-session.sh
+PROVISION_DST  := $(SHARE_DIR)/scripts/provision-claude-session.sh
+
+INSTALLED_FILES := $(WRAPPER_DST) $(PROFILE_DST) $(ACL_SCRIPT_DST) $(PROVISION_DST)
 
 # Use install(1) for proper mode + atomic replace + dir creation
 INSTALL          := install
@@ -45,7 +50,7 @@ INSTALL_DIR      := $(INSTALL) -d -m 0755
 
 # ── Targets ──────────────────────────────────────────────────────────────────
 
-.PHONY: all install install-test uninstall verify help
+.PHONY: all install install-test uninstall verify help provision unprovision
 
 all: help
 
@@ -59,14 +64,29 @@ install: $(INSTALLED_FILES)
 	@echo "  Wrapper:    $(WRAPPER_DST)"
 	@echo "  Profile:    $(PROFILE_DST)"
 	@echo "  ACL script: $(ACL_SCRIPT_DST)"
+	@echo "  Provision:  $(PROVISION_DST)"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. Run J121-ft3 (provision-claude-session.sh) to create the"
-	@echo "     claude-session user, /etc/subuid map, and ACLs."
+	@echo "  1. Run \`make provision\` (or invoke $(PROVISION_DST) directly)"
+	@echo "     to create the claude-session user, /etc/subuid map, and ACLs."
 	@echo "  2. Complete claude-session's Anthropic OAuth on first invocation"
 	@echo "     of: claude-sandbox -p \"hello\""
 	@echo ""
 	@echo "Until step 1 lands, claude-sandbox runs in same-UID degraded mode."
+
+# Provisioning targets are sudo-mediated and mutate system state
+# (/etc/passwd, /etc/subuid, /etc/subgid, ACLs on ~/.claude/projects/).
+# Kept separate from `install` so the file-deploy step stays safe to
+# re-run unattended. The provision script re-execs itself under sudo
+# when invoked unprivileged, so we don't sudo from the Makefile.
+
+provision: $(PROVISION_DST) $(ACL_SCRIPT_DST)
+	@echo "Provisioning claude-session (will prompt for sudo) ..."
+	$(PROVISION_DST) --acl-script $(ACL_SCRIPT_DST)
+
+unprovision: $(PROVISION_DST) $(ACL_SCRIPT_DST)
+	@echo "Un-provisioning claude-session (will prompt for sudo) ..."
+	$(PROVISION_DST) --uninstall --acl-script $(ACL_SCRIPT_DST)
 
 # Use PREFIX/USER_CONFIG overrides for safe non-destructive testing.
 # Effectively: deploy everything under /tmp/claude-sandbox-test instead of
@@ -117,5 +137,9 @@ $(PROFILE_DST): $(PROFILE_SRC)
 	$(INSTALL_DATA) $< $@
 
 $(ACL_SCRIPT_DST): $(ACL_SCRIPT_SRC)
+	@$(INSTALL_DIR) $(dir $@)
+	$(INSTALL_PROGRAM) $< $@
+
+$(PROVISION_DST): $(PROVISION_SRC)
 	@$(INSTALL_DIR) $(dir $@)
 	$(INSTALL_PROGRAM) $< $@
