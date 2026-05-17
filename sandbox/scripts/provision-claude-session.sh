@@ -96,13 +96,17 @@ if [ "$(id -u)" -ne 0 ]; then
         exit 1
     fi
     echo "→ re-execing under sudo ..."
+    # Use printf rather than echo for the conditional flags: bash's
+    # builtin echo prints anything starting with `--` literally (it
+    # only honors -n/-e/-E), but that's not portable across shells
+    # and the next reader shouldn't have to know that to feel safe.
     exec sudo -E "${BASH_SOURCE[0]}" \
-        ${mode:+$( [ "$mode" = "uninstall" ] && echo --uninstall )} \
+        $( [ "$mode" = "uninstall" ] && printf '%s\n' --uninstall ) \
         --user "$claude_user" \
         --host-user "$host_user" \
         --host-home "$host_home" \
         --acl-script "$acl_script" \
-        $( [ "$do_acls" -eq 0 ] && echo --no-acls )
+        $( [ "$do_acls" -eq 0 ] && printf '%s\n' --no-acls )
 fi
 
 # ── /etc/subuid + /etc/subgid helpers ────────────────────────────────────────
