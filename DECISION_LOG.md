@@ -679,3 +679,459 @@ a narrow exception path with explicit policy.
   is documented as a recommended setup but not enforced by the
   script. Lowering enforcement here matches the discouraged-but-
   possible character of the escape hatch as a whole.
+
+---
+
+### DEC-011: Compose with upstream `/sandbox` + `srt`; `claude-sandbox` becomes augmentation layer (2026-05-26)
+
+**Decision:** Phase 1's `claude-sandbox` wrapper is reframed as an
+**augmentation layer** over Claude Code's built-in `/sandbox` and the
+open-source `@anthropic-ai/sandbox-runtime` (`srt`) rather than a
+standalone replacement. The wrapper supports two execution modes,
+both first-class:
+
+- **Composed mode (default):** `sudo -u claude-session <env-scrub>
+  srt claude` — outer wrapper does the host-side prep (identity
+  switch, ACL staging, broker/proxy bring-up), inner srt does the
+  bwrap layer.
+- **Standalone mode (`--standalone`):** `sudo -u claude-session
+  <env-scrub> bwrap <our-args> -- claude` — outer wrapper does the
+  host-side prep *and* the bwrap layer directly, with no srt
+  involvement.
+
+Both modes share the host-side prep, identity layer (DEC-012), and
+egress mediation (DEC-013). Only the bwrap-doer differs. Standalone
+mode exists for three reasons: (a) educational — exercising bwrap
+directly grows the operator's understanding of what the composed
+mode delegates; (b) trust-fallback — srt is in public preview and
+the operator may not yet trust it for production use; (c)
+environments where srt is unavailable or rejected.
+
+The bubblewrap primitive choice from DEC-007 stands: `/sandbox` and
+srt use bwrap on Linux, so adopting them does not reverse that
+decision. What is reversed is the implementation scope: claude-config
+no longer reproduces app-layer Bash/network policy enforcement from
+scratch in composed mode, and DOES reproduce a sufficient subset of
+it in standalone mode (replicating srt's filesystem/network policy
+from our profile YAML).
+
+**Context:** The ClaudeConfig-40s.13 survey
+(`.tasks/ClaudeConfig-40s.13-claude-code-sandboxing-survey/REPORT.md`
++ `FOLLOWUP.md`, both 2026-05-25) found that between DEC-007
+(2026-05-05) and the survey date, Anthropic shipped `/sandbox` and
+`srt`, which together implement a near-superset of Phase 1's planned
+wrapper functionality on the same primitive.
+
+Two non-trivial facts shaped the framing:
+
+1. **Active security churn at the upstream sandbox boundary.** The
+   Register (2026-05-20) reported two `/sandbox` bypass bugs
+   disclosed within five months — CVE-2025-66479 (sandbox-runtime
+   v0.0.16, Dec 2025) and an uncatalogued SOCKS5 hostname null-byte
+   injection (sandbox-runtime v0.0.43 / Claude Code v2.1.90,
+   2026-03-31). The May 2026 fix was parser-hardening defense-in-
+   depth, not structural. Nine related concerning issues remain
+   open in `anthropic-experimental/sandbox-runtime`, with one
+   (#122) filed 12 hours before the survey concluded. Treating
+   `/sandbox` as the sole boundary on credentialed infrastructure
+   is not defensible right now.
+2. **Permissive defaults plus app-layer enforcement.** `/sandbox`
+   leaves `~/.aws/credentials`, `~/.ssh/`, and the entire home
+   directory readable by default. Auto mode reads `.env` and sends
+   matched credentials to their target APIs as documented behavior.
+   App-layer enforcement is bypassable by Python subprocesses
+   calling `open()` directly, by classifier mispredictions, and by
+   parser bugs of the Register-disclosed class.
+
+The augmentation framing keeps `claude-sandbox` providing the
+kernel-enforced fallback (separate UID via DEC-012, ACL-policed
+credentials, deterministic egress mediation via DEC-013) **on top
+of** Anthropic's app-layer fence. Each layer defends against failure
+modes the other doesn't: the kernel boundary catches app-layer
+bypasses; the app-layer fence is the always-on default that catches
+mundane mistakes the kernel layer's policy would also catch but
+more expensively.
+
+**Alternatives:**
+
+- *Drop `claude-sandbox` entirely; rely on `/sandbox` + `srt` alone.*
+  Rejected for the Register-disclosure reasons above. Also rejected
+  for a structural reason: claude-config holds the security policy
+  under a separate UID's filesystem ownership and ACL controls,
+  which is independent of whether the Claude Code process is correct
+  or compromised. That property cannot be reconstructed inside the
+  application.
+- *Keep `claude-sandbox` as a from-scratch standalone replacement
+  (the prior Phase 1 scope).* Rejected: reproducing the network-
+  policy engine and proxy correctly is a 12–18-month effort that
+  we'd be doing in parallel with Anthropic's own security team.
+  The augmentation framing extracts the unique-to-us value and
+  lets the app-layer fence be Anthropic's problem.
+- *Standalone-only (no srt integration ever).* Rejected: gives up
+  the upstream policy work for no benefit. The trust-fallback role
+  for standalone mode is real but doesn't justify rejecting
+  composed mode as default.
+- *Nest bwrap calls (outer claude-sandbox bwrap → inner srt bwrap).*
+  Rejected as the standard pattern. Nesting works in principle
+  (mount + user namespaces are nestable) but produces mount-conflict
+  errors when policy layers disagree. Cleaner: outer wrapper does
+  host-side prep without bwrap, inner srt does the only bwrap
+  layer.
+
+**Consequences:**
+
+- **DEC-007 narrows in scope, does not supersede.** The bubblewrap
+  choice and the four validated POC criteria still hold. What
+  changes is which process invokes bwrap: directly via our wrapper
+  in standalone mode, indirectly via srt in composed mode. The POC
+  at `.tasks/40s.7-bwrap-eval/poc-wrapper.sh` becomes the reference
+  implementation for standalone mode.
+- **Two acceptance test paths.** Both composed and standalone modes
+  need smoke tests. ClaudeConfig-40s.6 (manual smoke-test docs)
+  expands accordingly.
+- **Settings.json emission is a Phase 2 concern.** Phase 2 profile
+  YAML (ClaudeConfig-a92.1) gains a settings.json emitter for
+  composed mode; standalone mode consumes the same YAML directly
+  via bwrap argument construction.
+- **Upstream-tracking obligation.** `srt`'s config schema is beta-
+  stable but additive; Anthropic publishes no formal break-change
+  policy beyond a beta banner. A quarterly upstream-review bead
+  modeled on ClaudeConfig-40s.13 keeps drift visible. If srt
+  introduces a breaking change, standalone mode is the fallback
+  during the catch-up window.
+- **DEC-007 follow-up #2 (telemetry) is partially answered.** Hooks
+  run on the host, outside the sandbox boundary. The OTEL Collector
+  sidecar pattern (FOLLOWUP.md Q5) is the integration path; a
+  separate Phase 1.5 bead implements it.
+
+---
+
+### DEC-012: Retain `claude-session` user as kernel-enforced isolation boundary (2026-05-26)
+
+**Decision:** The dedicated `claude-session` user (provisioned by
+`sandbox/scripts/provision-claude-session.sh`, shipped per J121-ft3)
+is retained as Phase 1's identity layer. The wrapper invokes the
+sandboxed Claude Code process as `claude-session` (via `sudo -u
+claude-session`) regardless of whether `/sandbox` and `srt` are also
+engaged. This closes DEC-007's open follow-up #1 in favor of option
+A (real user account) and against the ClaudeConfig-40s.13 survey's
+initial DROP recommendation.
+
+**Context:** The ClaudeConfig-40s.13 survey initially recommended
+dropping `claude-session` in favor of `srt`'s
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` environment scrubbing. On review,
+that recommendation conflated *environment isolation* (what env vars
+the sandbox process can see) with *process-level isolation* (what
+the sandbox process can do to other processes and inodes on the
+host). Env-scrubbing addresses the first; only a separate UID
+addresses the second.
+
+What a separate `claude-session` UID buys that env-scrubbing alone
+does not:
+
+- **Kernel-enforced inter-process boundary.** Sandbox processes
+  cannot ptrace `hactar`'s processes, cannot read
+  `/proc/<hactar-pid>/environ`, cannot reach `hactar`'s SSH agent
+  socket, cannot signal `hactar`'s shells.
+- **Filesystem ownership clarity.** Anything Claude writes is owned
+  by `claude-session`. Forensic separation is automatic; no log-
+  parsing heuristics required.
+- **Standard Unix auditing.** `journalctl _UID=<claude-session-uid>`
+  filters all session activity for free. auditd rules target the
+  UID directly. cgroups-per-user (via systemd user slices) gate
+  resource accounting.
+- **Defense against `/sandbox` bypasses.** When (not if, per the
+  Register disclosure) the next sandbox bypass lands, the attacker
+  is still confined to a separate UID's filesystem view with no
+  write access to `hactar`'s home outside ACL-granted paths. The
+  kernel boundary holds when the app-layer fence breaks.
+- **Audit trail clarity in BOCO IT systems.** Telemetry routed
+  through journald + OTEL Collector (per DEC-011 telemetry
+  consequence) carries `claude-session`-tagged spans,
+  distinguishable from interactive user activity at the BOCO IT
+  level without per-process inspection.
+
+The cost is the provisioning complexity — already paid. J121-ft3
+closed 2026-05-17 with `provision-claude-session.sh` end-to-end
+verified.
+
+**Alternatives:**
+
+- *Same-UID execution with env-scrubbing only.* Rejected for the
+  reasons enumerated above. Env-scrubbing is part of the answer; it
+  is not the whole answer.
+- *Per-session UIDs (one disposable user per session) instead of a
+  shared `claude-session`.* Rejected: blast-radius improvement is
+  marginal (sandbox sessions are already short-lived) and the
+  provisioning cost is substantial (creating users on session start
+  violates the install-time-only principle).
+- *DEC-007 follow-up #1 option B (subuid namespaces, rootless).*
+  Rejected for the identity layer: opaque high-range UIDs in logs
+  lose the human-readable identity property that the named user
+  provides, and standard Unix tooling (auditd, journalctl, sudo,
+  systemd) is named-user-shaped. The rootless property is nice but
+  not load-bearing given that J121-ft3 is shipped. **However, see
+  Phase 6 note below — subuid is the right mechanism for a
+  different problem.**
+
+**Consequences:**
+
+- **DEC-007 follow-up #1 closed in favor of option A.** ACLs for
+  `~/.claude/projects/` re-enter Phase 1 scope as planned (partially
+  shipped via the provisioning script).
+- **`provision-claude-session.sh` retained.** No deprecation; the
+  script becomes part of standard install and gains documentation
+  under `docs/SANDBOX_GUIDE.md`.
+- **Invocation chain documented.** The canonical sandboxed
+  invocation is `sudo -u claude-session srt claude` (composed mode)
+  or `sudo -u claude-session bwrap ... -- claude` (standalone mode).
+  Both compose with DEC-013's egress mediation.
+- **Audit log destinations split sensibly.** Swarm-daemon-level
+  events (session lifecycle) land in journald under `_UID=claude-
+  session`. Per-session tool-call traces land in
+  `/home/claude-session/.cache/claude-config/<session-id>/` (XDG-
+  compliant, UID-owned, naturally aged out). A `PostToolUse` hook
+  bridges between them via `systemd-cat`.
+- **OAuth identity isolation flows naturally.**
+  `HOME=/home/claude-session` means the Anthropic OAuth refresh
+  token (DEC-009) lives separately from `hactar`'s OAuth identity.
+  No code change needed.
+- **The `claude-session` UID never gets sudoers grants.** The
+  privileged-helper sudoers entry (`/etc/sudoers.d/claude-sandbox`)
+  authorizes `hactar` to invoke the privileged setup as root —
+  `claude-session` itself remains an unprivileged user with no
+  sudo access.
+
+**Phase 6 note — subuid is the right mechanism for a different
+problem.** Rejecting subuid for the identity layer does not reject
+it everywhere. The Phase 6 autosession daemon will spawn multiple
+concurrent agent workers; if they all share `claude-session`'s UID,
+they can see each other's processes and files. The natural answer
+is to allocate each worker a slice of `claude-session`'s subuid
+range (`/etc/subuid` entry for `claude-session`) and have the
+daemon launch each worker in its own user namespace mapped to that
+slice. This gives per-worker kernel isolation without per-worker
+user provisioning. A Phase 6-design bead should capture this; the
+decision belongs there, not here.
+
+---
+
+### DEC-013: Egress mediation via Unix-socket broker (credentialed) and SNI-inspecting proxy (uncredentialed) (2026-05-26)
+
+**Decision:** All outbound traffic from sandboxed sessions transits
+one of two host-side mediation layers, both running under a
+dedicated `claude-egress` UID (separate from `claude-session`):
+
+1. **Credentialed endpoints** (e.g., OpenAI, GitHub, Anthropic API,
+   …): a **Unix-socket broker**. The sandbox calls a local Unix-
+   domain socket (bound into the sandbox's mount namespace at a
+   fixed path); the broker receives the request, attaches the
+   appropriate credential according to destination policy, and
+   makes the real upstream HTTPS call. The sandbox never speaks
+   TLS to the real destination. Credentials never enter the
+   sandbox.
+
+2. **Uncredentialed but allowlisted endpoints** (e.g., npm
+   registry, GitHub raw, package mirrors, docs sites): an **SNI-
+   inspecting passthrough proxy**. The sandbox makes normal
+   outbound HTTPS; the proxy reads the SNI from the ClientHello
+   (plaintext), checks against the allowlist, and either splices
+   the encrypted bytes through to the real destination or drops
+   the connection. No TLS termination, no CA cert installed in the
+   sandbox.
+
+Both layers run under `claude-egress`'s UID, with policy files
+owned by root and readable by `claude-egress` (0640) —
+`claude-session` cannot tamper with policy or eavesdrop on broker
+plaintext. This composes with — does not replace — DEC-008's
+tiered credential policy and DEC-009/010's existing credential
+mechanisms.
+
+**Context:** Two findings from ClaudeConfig-40s.13 motivate this DEC:
+
+1. **The Register disclosure (2026-05-20)** documented a SOCKS5
+   hostname null-byte injection that defeated `/sandbox`'s wildcard
+   allowlist for ~5.5 months across `claude-session`'s GA window.
+   The fix was parser-hardening, not structural. The same
+   architectural pattern — hostname-string-as-boundary in an app-
+   layer filter — remains in place. More bypasses of this class are
+   likely (nine related open issues, one filed within 12 hours of
+   the survey).
+2. **Auto mode reads `.env` and sends credentials to matching APIs
+   by documented design.** Verified verbatim from
+   `docs.claude.com/docs/en/permission-modes`. The auto-mode
+   classifier's decisions are statistical and unauditable from
+   outside Anthropic.
+
+Deterministic egress mediation is the only defense robust against
+both classes. The two-pattern split (broker for credentialed,
+SNI-proxy for uncredentialed) reflects a real architectural
+distinction: credential injection requires the proxy to "see
+inside" the request, but SNI inspection achieves destination
+control without that. Forcing all egress through a single MITM-
+style proxy would buy unified architecture at the cost of CA-cert-
+in-sandbox concerns (see Alternatives).
+
+**How each pattern handles its threat model:**
+
+- **Broker (credentialed):** Sandbox can never exfil the credential
+  because the credential isn't in the sandbox. Domain fronting is
+  irrelevant — the broker enforces destination by *credential*
+  (this credential routes to this hostname only), not by URL parsed
+  from the sandbox's request. Parser bypasses in `/sandbox` don't
+  help an attacker reach an exfil destination, because the attacker
+  would still need to convince the broker to attach the credential,
+  and broker policy is hardcoded per credential.
+- **SNI proxy (uncredentialed):** No credentials at stake. The
+  defense is destination-control: the sandbox cannot reach
+  `evil.com` even if its app-layer allowlist is bypassed, because
+  the proxy enforces SNI against a static allowlist with no parser
+  shenanigans. Client-lies-about-SNI is defeated by the proxy
+  resolving SNI to IPs itself and only connecting to those. ECH
+  (Encrypted Client Hello) will eventually obsolete this technique;
+  sunset path documented in Open follow-up.
+
+**Alternatives:**
+
+- *Trust `/sandbox`'s network allowlist as the sole egress
+  boundary.* Rejected for the disclosure history. Wildcard
+  allowlist users had no boundary for 5.5 months. The architectural
+  pattern that produced both bypasses (parser + hostname-string
+  boundary) is unchanged.
+- *Single full-MITM proxy (e.g., mitmproxy with CA cert installed
+  in sandbox).* Rejected. The CA cert becomes a trust root inside
+  the sandbox; if exfiltrated via any sandbox bypass, the attacker
+  can MITM all future HTTPS the sandbox makes. The mitmproxy
+  process additionally sees all sandbox HTTPS in plaintext and
+  becomes a high-value target. Bypass surface includes anything in
+  the sandbox that doesn't honor the system CA store (Go
+  `crypto/tls` with pinned certs, Python with `verify=False`). The
+  broker pattern subsumes the credential-injection use case
+  without the CA-trust footprint; SNI inspection subsumes the
+  destination-control use case without decryption. Both are smaller
+  attack surfaces than full MITM.
+- *Per-credential outbound firewall rules (nftables on the host).*
+  Considered as complement. nftables can enforce destination IP/
+  port for the `claude-egress` UID, but cannot inject credentials
+  or inspect SNI. Useful as belt-and-suspenders below the proxy/
+  broker — a rule like "claude-egress can only reach destinations
+  $allowlist_ips" hardens against proxy-bypass attempts. To be
+  added as a Phase 1.5 enhancement.
+- *Network-namespace confinement of the sandbox* (force all egress
+  through the proxy at the kernel level by giving the sandbox no
+  default route). Considered, **deferred to Phase 1.5 open
+  discussion** per the WSL2 caveat below.
+- *Implement the SNI proxy in Bash or Python from scratch.*
+  Rejected. Bash can't speak TLS preread cleanly. Python is
+  workable but `asyncio` + raw TLS parsing carries enough sharp
+  edges that a small Go program is materially safer.
+- *Wait for Anthropic to ship structural egress controls.*
+  Rejected: timeline is open-ended and the disclosed bypass class
+  is exactly the architecture-pattern bug that's least likely to
+  get a structural rewrite. We can't put credentialed infrastructure
+  on someone else's security team's timeline.
+
+**Consequences:**
+
+- **New Phase 1.5 components:**
+  - `sandbox/bin/claude-egress-broker` — Unix-socket broker for
+    credentialed endpoints. Runs as `claude-egress`. Implementation
+    language: Python or Go (broker logic is HTTP/JSON, not bytes-
+    shuffling — language choice can be looser than for the proxy).
+  - `sandbox/bin/claude-egress-proxy` — SNI-inspecting passthrough
+    proxy for allowlisted uncredentialed endpoints. Runs as
+    `claude-egress`. Implementation language: Go, ~300 LOC using
+    `crypto/tls.ClientHelloInfo` + `io.Copy`. Recommended.
+- **New `claude-egress` UID.** Provisioned by an extension to
+  `provision-claude-session.sh` (or a sibling script). No sudoers
+  entry. Owns the broker and proxy processes; reads policy files
+  from `/etc/claude-config/egress-policy/` (root-owned, 0640,
+  `claude-egress` group-readable).
+- **Credentials live in `/etc/claude-config/credentials/`.** Root-
+  owned, 0640, `claude-egress` group-readable. File-per-credential.
+  The broker reads them at startup or on-demand; they never appear
+  in `claude-session`'s view of the filesystem.
+- **Phase 2 profile YAML gains two new fields:**
+  - `egress.broker:` — map of credential-name → upstream
+    destination, compiled into the broker's policy file at install
+    / profile-switch time.
+  - `egress.allowlist:` — list of SNI hostnames for the passthrough
+    proxy.
+- **`/sandbox` and `srt` allowlists become a secondary layer.** Set
+  to the union of (broker destinations expressed as the broker's
+  local socket) + (proxy allowlist) per active profile; the broker/
+  proxy is the deterministic enforcer below.
+- **Auto mode is prohibited in deployed profiles** as a belt-and-
+  suspenders matter (FOLLOWUP.md Q2 recommendation). The broker
+  makes auto mode operationally safe (credentials aren't in the
+  sandbox to be read), but disabling it removes the entire `.env`-
+  reading classifier surface from the design — cheaper than
+  reasoning about edge cases.
+- **`.env` files in worktrees are denied-read by default.** Even
+  though the broker makes their contents non-load-bearing,
+  `denyRead` on `**/.env` removes the classifier's input. Belt-and-
+  suspenders pattern.
+- **Tier 3 credentials still require human execution.** The broker
+  makes tier-1 and (the implementation of) tier-2 mechanically
+  safe; tier-3 (production-mutation, broad-scope external auth)
+  remains recommend-and-execute. The broker is a hardening of the
+  safe tiers, not a license to broaden them.
+- **The broker and proxy are new attack surfaces.** Each becomes a
+  load-bearing security boundary. Implementations must be small,
+  reviewed thoroughly, and given their own security-review beads.
+
+**Open follow-up:**
+
+1. **Network-namespace confinement of the sandbox** — would force
+   all sandbox egress through the proxy/broker at the kernel level,
+   leaving no possibility of direct TCP/UDP from the sandbox to
+   anywhere except via the mediation layers. Defers to Phase 1.5
+   discussion because WSL2 has a documented kernel bug affecting
+   network namespaces (see
+   `~/.local/src/wsl-vpn-namespace/docs/PITFALLS.md`): non-blocking
+   sockets using `select`/`poll` after a bidirectional handshake
+   hang inside a netns on the WSL2 kernel, affecting pyOpenSSL and
+   ssh. Most sandbox tooling uses curl/openssl/stdlib-SSL backends
+   which are unaffected, but some Python tooling does use
+   pyOpenSSL and would break. Decision needs both: (a) survey of
+   which sandbox-relevant tools use pyOpenSSL, (b) tracking of
+   WSL2 kernel fixes for the underlying bug. Out of scope here.
+2. **nftables belt-and-suspenders for `claude-egress`** — a rule
+   restricting `claude-egress`'s outbound by destination IP, below
+   the proxy/broker, defending against proxy-bypass attempts.
+   Phase 1.5 enhancement.
+3. **ECH sunset for SNI proxy** — when Encrypted Client Hello is
+   widely deployed, the SNI proxy's inspection technique fails.
+   Track ECH adoption; switch to a different mechanism (e.g.,
+   DNS-based allowlist + nftables IP rules) when adoption crosses
+   a threshold. Pre-emptive Phase 6 bead.
+
+---
+
+### DEC-014: `docs/research/` home for upstream-overlap surveys (2026-05-26)
+
+**Decision:** A new top-level documentation subdirectory
+`docs/research/` is established as the home for upstream-tooling
+surveys and similar "what does ecosystem X already do for us"
+investigations. Distinct in purpose from `docs/reviews/` (review
+checkpoint summaries tied to completed features) and
+`docs/transcripts/` (design discussions). Each survey lives as a
+single Markdown file with citations, dated to its survey date.
+
+**Context:** ClaudeConfig-40s.13 is the first such survey; it
+won't be the last. Phase 2 profile design, Phase 5 Dolt branch-
+restriction, and Phase 7 dispatcher all have similar upstream-
+overlap questions that benefit from periodic re-survey as the
+ecosystem evolves. The working artifact (full report) lives under
+`.tasks/`; the condensed, citation-trimmed, source-controlled
+version lives here.
+
+**Consequences:**
+
+- `docs/research/claude-code-sandboxing-survey.md` lands as the
+  first entry, condensed from the ClaudeConfig-40s.13 task dir.
+- A `docs/research/README.md` documents the purpose and naming
+  convention (date-suffix optional; topic-slug primary).
+- Per CLAUDE.md, new top-level directory documented here in the
+  decision log. No further sub-DEC required for individual
+  surveys.
