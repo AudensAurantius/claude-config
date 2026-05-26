@@ -6,3 +6,6 @@
 
 # Local environment (machine-specific secrets and paths)
 .envrc
+
+# bv (beads viewer) local config and caches
+.bv/
