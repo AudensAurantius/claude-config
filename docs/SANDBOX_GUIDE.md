@@ -72,6 +72,62 @@ isn't taking a host-level risk — the sandbox already constrains what
 the response can do — so the convention's batch-approve-up-front
 pattern can be relaxed there.
 
+### Permission mode policy
+
+Claude Code ships six permission modes (`default`, `acceptEdits`,
+`plan`, `auto`, `dontAsk`, `bypassPermissions`). claude-config's
+deployed profiles treat them asymmetrically — and the asymmetry is
+deliberate, so it's worth stating plainly.
+
+**`auto` mode is prohibited in deployed profiles.** Auto mode's
+distinguishing feature is a server-side classifier that, by
+documented default, *reads `.env` files and sends matched credentials
+to their target API* and can autonomously set
+`dangerouslyDisableSandbox: true` when a sandbox-caused failure is
+hit (upstream issue #97). That credential-egress behavior is the
+exact DEC-001 / DEC-008 anti-pattern. The lock-off is a purpose-built
+managed-settings knob:
+
+```json
+// /etc/claude-code/managed-settings.json
+{
+  "permissions": {
+    "disableAutoMode": "disable"
+  }
+}
+```
+
+Two further backstops make this robust: Claude Code already ignores
+`defaultMode: "auto"` from project/local settings (a repo cannot
+grant itself auto mode — only `~/.claude/settings.json` can set it),
+and the `Read(**/.env)` deny rule shipped in the baseline settings
+neutralizes the specific credential behavior even if auto mode were
+somehow active. The docs themselves point at deny rules as the only
+"hard guarantee" — conversational boundaries like "don't read .env"
+are re-read from the transcript each check and lost on context
+compaction.
+
+Do **not** lock auto mode off by forcing `permissionMode: "default"`
+in managed settings. That would also block `bypassPermissions` and
+`dontAsk`, which we want available (see below). Use the surgical
+`disableAutoMode` knob instead.
+
+**`bypassPermissions` and `dontAsk` remain available inside the
+sandbox.** Neither has auto mode's credential-classifier behavior;
+they only change prompt handling. Inside the kernel sandbox the
+boundary is enforced by the separate `claude-session` UID (DEC-012)
+and the egress broker/proxy (DEC-013), not by prompts — so a
+sandboxed worker running `--dangerously-skip-permissions`
+(`bypassPermissions`) is safe by construction, and `dontAsk` (pre-
+approved tools only) is ideal for fully unattended CI-style runs. The
+managed-settings `disableAutoMode` lock is host-wide, which is fine:
+we never want auto mode anywhere on this machine, and we do **not**
+globally disable `bypassPermissions` because the sandbox relies on it.
+
+`autoMode.environment` is not a mitigation knob — it only *expands*
+the classifier's trusted-infrastructure list. It cannot disable the
+`.env`-credential behavior, so it plays no role in this policy.
+
 ### Sandbox awareness for sessions
 
 How to tell whether a Claude session is running inside the sandbox.
