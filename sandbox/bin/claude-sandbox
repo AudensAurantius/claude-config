@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# claude-sandbox — wrap `claude` in a bubblewrap (bwrap) namespace per
+# the active profile.
+#
+# Phase 1: single fixed profile (default), single fixed worktree (the
+# wrapper's cwd), single namespace per invocation. No parallelism. The
+# profile YAML at $PROFILE describes which paths to bind; this script
+# translates that into bwrap flags and exec's.
+#
+# Cross-references:
+#   DEC-006  allow-list visibility
+#   DEC-007  bwrap as Phase 1 sandbox primitive
+#   DEC-008  no credential injection in profiles
+#   DEC-009  claude-session's own Anthropic OAuth
+#
+# Usage: claude-sandbox [--profile NAME] [--] [claude-args...]
+#        claude-sandbox --version
+#        claude-sandbox --help
+#
+# Options:
+#   --profile NAME   profile to load (default: "default")
+#                    looked up at $CLAUDE_SANDBOX_PROFILE_DIR/NAME.yaml
+#   --version        print claude-sandbox + bwrap + claude versions
+#   --help, -h       show this help
+#
+# Environment:
+#   CLAUDE_SANDBOX_PROFILE_DIR   override the profile lookup path
+#                                (default: /usr/local/share/claude-sandbox/profiles)
+#
+# Behavior on missing claude-session:
+#   The wrapper is designed to drop UID to claude-session via bwrap's
+#   user-namespace --uid/--gid flags. If claude-session does not exist
+#   on the host (J121-ft3 not yet run), the wrapper runs in same-UID
+#   degraded mode: still inside a fresh mount namespace with allow-list
+#   binds, but as the host user rather than a separate principal. A
+#   warning is emitted; J121-ft3 lands the proper A2 user-model setup.
+
+set -euo pipefail
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+
+PROFILE_NAME="default"
+PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
+
+usage() {
+    sed -n '/^# claude-sandbox/,/^# Behavior/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --profile) PROFILE_NAME="$2"; shift 2 ;;
+        --help|-h) usage; exit 0 ;;
+        --version)
+            echo "claude-sandbox 0.1.0 (Phase 1)"
+            bwrap --version 2>/dev/null || echo "bwrap: not installed"
+            claude --version 2>/dev/null || echo "claude: not installed"
+            exit 0 ;;
+        --)        shift; break ;;
+        # Anything else (including unknown flags) is claude's; stop parsing
+        # so the rest of $@ passes through. To force a literal stop without
+        # any leading args, use `--`. To pass `--help` to claude, use
+        # `claude-sandbox -- --help`.
+        *)         break ;;
+    esac
+done
+
+# Remaining args ($@) are claude args; pass through after bwrap setup.
+
+# ── Preconditions ────────────────────────────────────────────────────────────
+
+PROFILE="${PROFILE_DIR}/${PROFILE_NAME}.yaml"
+if [ ! -f "$PROFILE" ]; then
+    echo "claude-sandbox: profile not found: $PROFILE" >&2
+    echo "  Set CLAUDE_SANDBOX_PROFILE_DIR or place the profile at the expected path." >&2
+    exit 1
+fi
+
+for tool in bwrap yq jq getent; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "claude-sandbox: required tool not on PATH: $tool" >&2
+        exit 1
+    }
+done
+
+# ── Resolve runtime variables ────────────────────────────────────────────────
+
+USER_HOME="$HOME"
+INHERIT_TERM="${TERM:-xterm-256color}"
+INHERIT_LANG="${LANG:-C.UTF-8}"
+ACTIVE_PROJECT="$PWD"
+
+# Resolve sandbox user (gracefully degrade if absent — Phase 1 testability)
+SANDBOX_USER=$(yq -r '.sandbox_user.name' "$PROFILE")
+if getent passwd "$SANDBOX_USER" >/dev/null 2>&1; then
+    SANDBOX_UID=$(getent passwd "$SANDBOX_USER" | cut -d: -f3)
+    SANDBOX_GID=$(getent passwd "$SANDBOX_USER" | cut -d: -f4)
+    SANDBOX_HOME=$(getent passwd "$SANDBOX_USER" | cut -d: -f6)
+    USE_UID_REMAP=true
+else
+    echo "claude-sandbox: warning — sandbox user '$SANDBOX_USER' does not exist" >&2
+    echo "  Running in same-UID degraded mode (host user inside namespace)." >&2
+    echo "  Run J121-ft3 (provision-claude-session.sh) for the A2 user-model." >&2
+    SANDBOX_UID=$(id -u)
+    SANDBOX_GID=$(id -g)
+    SANDBOX_HOME="$USER_HOME"
+    USE_UID_REMAP=false
+fi
+
+# WSL2 detection (for conditional /mnt/wsl bind so /etc/resolv.conf resolves)
+IS_WSL=false
+[ -d /mnt/wsl ] && IS_WSL=true
+
+# Variable substitution in profile values
+substitute() {
+    sed -e "s|\${USER_HOME}|${USER_HOME}|g" \
+        -e "s|\${SANDBOX_HOME}|${SANDBOX_HOME}|g" \
+        -e "s|\${ACTIVE_PROJECT}|${ACTIVE_PROJECT}|g" \
+        -e "s|\${INHERIT_TERM}|${INHERIT_TERM}|g" \
+        -e "s|\${INHERIT_LANG}|${INHERIT_LANG}|g"
+}
+
+# ── Build bwrap argument array ───────────────────────────────────────────────
+
+BWRAP_ARGS=()
+
+# Environment policy: clearenv + selective set
+if [ "$(yq -r '.environment.clearenv' "$PROFILE")" = "true" ]; then
+    BWRAP_ARGS+=(--clearenv)
+fi
+while IFS=$'\t' read -r var value; do
+    [ -z "$var" ] && continue
+    value=$(printf '%s' "$value" | substitute)
+    BWRAP_ARGS+=(--setenv "$var" "$value")
+done < <(yq -r '.environment.set[] | [.var, .value] | @tsv' "$PROFILE")
+
+# Standard sandbox structure (must come before specific binds; tmpfs creates
+# the empty home, then ro-bind/bind operations punch through to specific paths)
+BWRAP_ARGS+=(
+    --proc /proc
+    --dev /dev
+    --tmpfs /tmp
+    --tmpfs "$SANDBOX_HOME"
+    --symlink usr/bin /bin
+    --symlink usr/lib /lib
+    --symlink usr/lib64 /lib64
+)
+
+# Read-only binds (system + cross-user claude-config + Claude binary)
+while IFS=$'\t' read -r src tgt when; do
+    [ -z "$src" ] && continue
+    [ "$when" = "wsl_only" ] && [ "$IS_WSL" = false ] && continue
+    src=$(printf '%s' "$src" | substitute)
+    tgt=$(printf '%s' "$tgt" | substitute)
+    [ -e "$src" ] || { echo "claude-sandbox: skipping ro-bind (source missing): $src" >&2; continue; }
+    BWRAP_ARGS+=(--ro-bind "$src" "$tgt")
+done < <(yq -r '.read_only[] | [.source, .target, (.when // "")] | @tsv' "$PROFILE")
+
+# Read-write binds (memory write-back + active project)
+while IFS=$'\t' read -r src tgt; do
+    [ -z "$src" ] && continue
+    src=$(printf '%s' "$src" | substitute)
+    tgt=$(printf '%s' "$tgt" | substitute)
+    [ -e "$src" ] || { echo "claude-sandbox: skipping bind (source missing): $src" >&2; continue; }
+    BWRAP_ARGS+=(--bind "$src" "$tgt")
+done < <(yq -r '.read_write[] | [.source, .target] | @tsv' "$PROFILE")
+
+# sandbox_home binds (claude-session's own files: OAuth credentials, .claude.json)
+while IFS=$'\t' read -r src tgt mode; do
+    [ -z "$src" ] && continue
+    src=$(printf '%s' "$src" | substitute)
+    tgt=$(printf '%s' "$tgt" | substitute)
+    [ -e "$src" ] || { echo "claude-sandbox: skipping sandbox_home bind (source missing): $src" >&2; continue; }
+    case "$mode" in
+        rw)        BWRAP_ARGS+=(--bind    "$src" "$tgt") ;;
+        ro|""|*)   BWRAP_ARGS+=(--ro-bind "$src" "$tgt") ;;
+    esac
+done < <(yq -r '.sandbox_home[] | [.source, .target, (.mode // "ro")] | @tsv' "$PROFILE")
+
+# Network policy
+case "$(yq -r '.network.policy' "$PROFILE")" in
+    host)  BWRAP_ARGS+=(--unshare-all --share-net) ;;
+    none)  BWRAP_ARGS+=(--unshare-all) ;;
+    *)     echo "claude-sandbox: unsupported network policy" >&2; exit 1 ;;
+esac
+
+# UID/GID remap (only when claude-session exists; otherwise same-UID)
+if [ "$USE_UID_REMAP" = true ]; then
+    BWRAP_ARGS+=(--uid "$SANDBOX_UID" --gid "$SANDBOX_GID")
+fi
+
+# Hygiene
+BWRAP_ARGS+=(
+    --die-with-parent
+    --hostname claude-sandbox
+    --chdir "$ACTIVE_PROJECT"
+)
+
+# ── Exec ─────────────────────────────────────────────────────────────────────
+
+exec bwrap "${BWRAP_ARGS[@]}" -- claude "$@"

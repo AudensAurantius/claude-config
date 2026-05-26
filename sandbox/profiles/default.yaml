@@ -1,0 +1,115 @@
+# Default sandbox profile — baseline visibility for claude-sandbox sessions.
+#
+# Phase 1 ships this as the only profile. The Phase 1 wrapper reads it from
+# /usr/local/share/claude-sandbox/profiles/default.yaml (deployed by the
+# Makefile installer). Phase 2 (ClaudeConfig-a92.1) formalizes the schema,
+# adds validation, and introduces additional profiles. Field names below
+# anticipate that schema; structure may evolve as Phase 2 work begins.
+#
+# Guiding principles (DEC-001, DEC-006, DEC-007, DEC-008):
+#
+#   - Allow-list visibility: the namespace begins with an empty home tmpfs;
+#     only paths listed below are visible inside the sandbox. This file
+#     describes the allow-list, not a deny-list.
+#   - bwrap is the underlying primitive (DEC-007). Each entry below maps to
+#     a bwrap flag at wrapper invocation time.
+#   - Profiles never inject credentials beyond the tier-1 set claude-session
+#     owns at the upstream service (DEC-008). No `env: SECRETS=...` keys
+#     are permitted in any profile, including this one.
+#
+# Variables referenced below are resolved by the wrapper at invocation:
+#
+#   ${USER_HOME}      host user's home (/home/hactar on this machine)
+#   ${SANDBOX_HOME}   claude-session's home (/home/claude-session under A2)
+#   ${ACTIVE_PROJECT} the cwd at wrapper invocation; bound writably so the
+#                     session can read/write the project tree
+#   ${INHERIT_TERM}   passed through from the host shell ($TERM)
+#   ${INHERIT_LANG}   passed through from the host shell ($LANG)
+
+name: default
+description: |
+  Baseline visibility. Cross-user binds expose the deployed claude-config
+  (skills/agents/etc.) read-only into claude-session's view. Memory write-back
+  via ACL-granted ${USER_HOME}/.claude/projects/. claude-session's own
+  Anthropic OAuth (DEC-009) lives at ${SANDBOX_HOME}/.claude/.credentials.json.
+
+# Sandbox user identity. Resolved at wrapper invocation: getent passwd
+# claude-session yields the UID/GID; bwrap is then invoked with --uid/--gid
+# to remap. Requires /etc/subuid and /etc/subgid lines granting the host
+# user the right to map to claude-session's range — set up by J121-ft3's
+# provisioning script.
+sandbox_user:
+  name: claude-session
+  resolve_via: getent  # alternatives (Phase 2): literal_uid, literal_gid
+
+# Read-only bind mounts. Source is the host path; target is the path inside
+# the sandbox. Cross-user binds (host owned by hactar, accessed by
+# claude-session) require the source to be world-readable OR have an ACL
+# granting claude-session read access.
+read_only:
+  # System paths
+  - { source: "/usr",                                      target: "/usr" }
+  - { source: "/etc",                                      target: "/etc" }
+  - { source: "/mnt/wsl",                                  target: /mnt/wsl,                                      when: wsl_only }
+
+  # Claude Code binary + runtime
+  - { source: "${USER_HOME}/.local/share/claude",          target: "${SANDBOX_HOME}/.local/share/claude" }
+  - { source: "${USER_HOME}/.local/bin/claude",            target: "${SANDBOX_HOME}/.local/bin/claude" }
+  - { source: "${USER_HOME}/.bun",                         target: "${SANDBOX_HOME}/.bun" }
+
+  # Deployed claude-config — skills, agents, commands, scripts, settings.
+  # Bound piecewise rather than `${USER_HOME}/.claude` whole because some
+  # subpaths (projects/, .credentials.json) need different bind modes.
+  - { source: "${USER_HOME}/.claude/skills",               target: "${SANDBOX_HOME}/.claude/skills" }
+  - { source: "${USER_HOME}/.claude/agents",               target: "${SANDBOX_HOME}/.claude/agents" }
+  - { source: "${USER_HOME}/.claude/commands",             target: "${SANDBOX_HOME}/.claude/commands" }
+  - { source: "${USER_HOME}/.claude/scripts",              target: "${SANDBOX_HOME}/.claude/scripts" }
+  - { source: "${USER_HOME}/.claude/CLAUDE.md",            target: "${SANDBOX_HOME}/.claude/CLAUDE.md" }
+  - { source: "${USER_HOME}/.claude/settings.json",        target: "${SANDBOX_HOME}/.claude/settings.json" }
+  - { source: "${USER_HOME}/.claude/keybindings.json",     target: "${SANDBOX_HOME}/.claude/keybindings.json" }
+
+# Read-write bind mounts. Source is on the host; sandbox can write through
+# the bind. Cross-user RW binds REQUIRE an ACL on the host source path
+# granting claude-session rwx (set up by sandbox/scripts/setup-claude-session-acls.sh,
+# invoked from J121-ft3's provisioning).
+read_write:
+  # Memory write-back: claude-mem observations, auto-memory MEMORY.md files,
+  # checkpoint files all flow back to the canonical project memory dir.
+  - { source: "${USER_HOME}/.claude/projects",             target: "${SANDBOX_HOME}/.claude/projects" }
+
+  # Active project worktree at the canonical path. Phase 1: bind the cwd
+  # at wrapper invocation. Phase 4 path-aliasing (per-session worktree
+  # mounted at the canonical project path for memory continuity) extends
+  # this; for Phase 1, the cwd IS the canonical path because there's no
+  # per-session worktree yet.
+  - { source: "${ACTIVE_PROJECT}",                         target: "${ACTIVE_PROJECT}" }
+
+# claude-session's own home content (OAuth credentials, preferences). These
+# live on claude-session's actual home directory and are bound directly
+# into the sandbox view (not cross-user).
+sandbox_home:
+  - { source: "${SANDBOX_HOME}/.claude/.credentials.json", target: "${SANDBOX_HOME}/.claude/.credentials.json",    mode: rw }
+  - { source: "${SANDBOX_HOME}/.claude.json",              target: "${SANDBOX_HOME}/.claude.json",                  mode: rw }
+
+# Worktree policy. Phase 1 uses the canonical project path directly.
+# Phase 3 changes this to "auto-create" (per-session worktree on a
+# session-specific feature branch).
+worktree:
+  policy: use-existing  # alternatives (Phase 3+): auto-create, disabled
+
+# Network policy. Phase 1 baseline: full host network (--share-net).
+# Future phases may add namespaced-network with explicit allowlists.
+network:
+  policy: host  # alternatives (future): none, allowlist
+
+# Environment policy. --clearenv strips inherited env, then the wrapper
+# sets only what the sandbox needs. Profiles never inject credentials
+# (DEC-001); only runtime essentials are set here.
+environment:
+  clearenv: true
+  set:
+    - { var: HOME, value: "${SANDBOX_HOME}" }
+    - { var: USER, value: claude-session }
+    - { var: PATH, value: "${SANDBOX_HOME}/.bun/bin:${SANDBOX_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" }
+    - { var: TERM, value: "${INHERIT_TERM}" }
+    - { var: LANG, value: "${INHERIT_LANG}" }
