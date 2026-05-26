@@ -1135,3 +1135,50 @@ version lives here.
 - Per CLAUDE.md, new top-level directory documented here in the
   decision log. No further sub-DEC required for individual
   surveys.
+
+---
+
+### DEC-015: `docs/design/` home for pre-decisional architecture designs (2026-05-26)
+
+**Decision:** A new documentation subdirectory `docs/design/` holds
+internal architecture design documents for not-yet-built or
+future-phase capabilities. These are **pre-decisional**: they lay out
+options, trade-offs, and a recommendation, but the binding decision
+lands in this decision log when the phase actually starts. Distinct
+from `docs/research/` (DEC-014, upstream-overlap surveys),
+`docs/reviews/` (completed-feature checkpoints), `docs/transcripts/`
+(verbatim design discussions), and `docs/guides/` (operator how-to).
+
+**Context:** ClaudeConfig-759 produced a Phase 6 worker-isolation
+design (subuid user-namespaces vs. Firecracker microVMs) while the
+context was fresh, well ahead of Phase 6 implementation. It is neither
+a survey (DEC-014) nor a finished-feature review nor a verbatim
+transcript — it is forward-looking internal design. Capturing such
+analysis when the reasoning is fresh, in a source-controlled and
+discoverable location, is worth a dedicated home. The `.tasks/`
+working-artifact directory is git-ignored and so unsuitable for design
+that must persist and inform a future phase.
+
+**Alternatives:**
+
+- *Put it in `docs/research/`.* Rejected: DEC-014 scoped that
+  directory to upstream-overlap surveys ("what does ecosystem X
+  already do for us"). Internal forward-looking design is a different
+  artifact; conflating them muddies both.
+- *Put it in the decision log directly as a DEC.* Rejected: a DEC
+  records a *decision*, and these documents are explicitly
+  pre-decisional. Forcing a premature DEC would either misrepresent
+  the status or pollute the log with options-analysis that belongs in
+  a design doc. The binding DEC comes later, at phase kickoff, and can
+  cite the design doc.
+- *Leave it in `.tasks/`.* Rejected: git-ignored, so neither durable
+  nor shareable; design that informs a future phase must survive.
+
+**Consequences:**
+
+- `docs/design/phase6-worker-isolation.md` is the first entry, with a
+  `docs/design/README.md` documenting the convention (status header:
+  pre-decisional / superseded-by-DEC-NNN / implemented-in-DEC-NNN).
+- Design docs cite the bead that produced them and the DECs they
+  relate to; the eventual binding DEC cites back to the design doc.
+- Per CLAUDE.md, this new documentation subdirectory is recorded here.
