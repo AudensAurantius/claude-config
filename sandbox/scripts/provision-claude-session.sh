@@ -193,6 +193,37 @@ do_install() {
         echo "  • ACL setup skipped (--no-acls)"
     fi
 
+    # 5. Install Claude Code for claude-session (DEC-016). Native binary in
+    #    claude-session's OWN home: it cannot share the host user's binary
+    #    (host's 0700 home), and composed mode (srt, no path remap) needs
+    #    claude on claude-session's real PATH. Version is pinned to the host
+    #    user's current claude (exact replica); CLAUDE_VERSION overrides.
+    #    Idempotent: skips if already at the target version. Ongoing exact
+    #    sync is the launcher's job (ClaudeConfig-40s.15.7).
+    local host_claude_ver target_ver
+    host_claude_ver="$(basename "$(readlink -f "${host_home}/.local/bin/claude" 2>/dev/null)" 2>/dev/null)"
+    target_ver="${CLAUDE_VERSION:-$host_claude_ver}"
+    if printf '%s' "$target_ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        local cur_ver
+        cur_ver="$(sudo -u "$claude_user" -H env PATH="${claude_home}/.local/bin:/usr/bin:/bin" \
+            claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+        if [ "$cur_ver" = "$target_ver" ]; then
+            echo "  ✓ ${claude_user} already at claude ${target_ver}"
+        else
+            echo "→ installing Claude Code ${target_ver} for ${claude_user} ..."
+            sudo -u "$claude_user" -H bash -c \
+                "curl -fsSL https://claude.ai/install.sh | bash -s ${target_ver}"
+            echo "  ✓ installed claude ${target_ver} for ${claude_user}"
+        fi
+        # Pin: disable claude-session's background auto-updater (DEC-016).
+        sudo -u "$claude_user" -H bash -c 'mkdir -p ~/.claude; f=~/.claude/settings.json; \
+            if [ -f "$f" ]; then t=$(mktemp); jq ".env=(.env//{})+{\"DISABLE_AUTOUPDATER\":\"1\"}" "$f" >"$t" && mv "$t" "$f"; \
+            else printf "{\"env\":{\"DISABLE_AUTOUPDATER\":\"1\"}}\n" >"$f"; fi'
+        echo "  ✓ set DISABLE_AUTOUPDATER=1 for ${claude_user}"
+    else
+        echo "  • skipping claude install: no valid version (set CLAUDE_VERSION=X.Y.Z, or install claude for ${host_user})" >&2
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""

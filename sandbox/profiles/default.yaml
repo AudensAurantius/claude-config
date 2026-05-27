@@ -52,21 +52,19 @@ read_only:
   - { source: "/etc",                                      target: "/etc" }
   - { source: "/mnt/wsl",                                  target: /mnt/wsl,                                      when: wsl_only }
 
-  # Claude Code binary + runtime
-  - { source: "${USER_HOME}/.local/share/claude",          target: "${SANDBOX_HOME}/.local/share/claude" }
-  - { source: "${USER_HOME}/.local/bin/claude",            target: "${SANDBOX_HOME}/.local/bin/claude" }
-  - { source: "${USER_HOME}/.bun",                         target: "${SANDBOX_HOME}/.bun" }
+  # Claude Code binary + runtime — claude-session OWNS its install (DEC-016;
+  # hactar's 0700 home makes sharing impossible). Moved to sandbox_home below.
 
-  # Deployed claude-config — skills, agents, commands, scripts, settings.
-  # Bound piecewise rather than `${USER_HOME}/.claude` whole because some
-  # subpaths (projects/, .credentials.json) need different bind modes.
-  - { source: "${USER_HOME}/.claude/skills",               target: "${SANDBOX_HOME}/.claude/skills" }
-  - { source: "${USER_HOME}/.claude/agents",               target: "${SANDBOX_HOME}/.claude/agents" }
-  - { source: "${USER_HOME}/.claude/commands",             target: "${SANDBOX_HOME}/.claude/commands" }
-  - { source: "${USER_HOME}/.claude/scripts",              target: "${SANDBOX_HOME}/.claude/scripts" }
-  - { source: "${USER_HOME}/.claude/CLAUDE.md",            target: "${SANDBOX_HOME}/.claude/CLAUDE.md" }
-  - { source: "${USER_HOME}/.claude/settings.json",        target: "${SANDBOX_HOME}/.claude/settings.json" }
-  - { source: "${USER_HOME}/.claude/keybindings.json",     target: "${SANDBOX_HOME}/.claude/keybindings.json" }
+  # DEPLOYED claude-config (skills/agents/commands/scripts/CLAUDE.md/settings):
+  # the cross-user hactar binds below are BROKEN under DEC-012 (claude-session
+  # can't read hactar's 0700 ~/.claude) and are SUPERSEDED by the launch-time
+  # assembly in ClaudeConfig-40s.15.8 (launcher copies hactar's ~/.claude into
+  # a claude-session-readable staging dir, with overlay/omit). Retained here
+  # commented-out as a record until 40s.15.8 lands the assembly.
+  # - { source: "${USER_HOME}/.claude/skills",   target: "${SANDBOX_HOME}/.claude/skills" }
+  # - { source: "${USER_HOME}/.claude/agents",   target: "${SANDBOX_HOME}/.claude/agents" }
+  # - { source: "${USER_HOME}/.claude/commands", target: "${SANDBOX_HOME}/.claude/commands" }
+  # - { source: "${USER_HOME}/.claude/scripts",  target: "${SANDBOX_HOME}/.claude/scripts" }
 
 # Read-write bind mounts. Source is on the host; sandbox can write through
 # the bind. Cross-user RW binds REQUIRE an ACL on the host source path
@@ -88,8 +86,16 @@ read_write:
 # live on claude-session's actual home directory and are bound directly
 # into the sandbox view (not cross-user).
 sandbox_home:
+  # Claude Code native binary + runtime — claude-session's OWN install
+  # (DEC-016, ClaudeConfig-40s.15.6). Bound read-only over the tmpfs home.
+  - { source: "${SANDBOX_HOME}/.local/share/claude",       target: "${SANDBOX_HOME}/.local/share/claude",           mode: ro }
+  - { source: "${SANDBOX_HOME}/.local/bin/claude",         target: "${SANDBOX_HOME}/.local/bin/claude",             mode: ro }
+  # (No ~/.bun bind: the native binary is self-contained and does not invoke
+  # bun/node at runtime. bun is only needed for bunx-based MCP servers — add a
+  # claude-session-owned ~/.bun bind here if/when MCP requires it.)
   - { source: "${SANDBOX_HOME}/.claude/.credentials.json", target: "${SANDBOX_HOME}/.claude/.credentials.json",    mode: rw }
   - { source: "${SANDBOX_HOME}/.claude.json",              target: "${SANDBOX_HOME}/.claude.json",                  mode: rw }
+  - { source: "${SANDBOX_HOME}/.claude/settings.json",     target: "${SANDBOX_HOME}/.claude/settings.json",         mode: ro }
 
 # Worktree policy. Phase 1 uses the canonical project path directly.
 # Phase 3 changes this to "auto-create" (per-session worktree on a

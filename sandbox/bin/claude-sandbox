@@ -141,6 +141,19 @@ substitute() {
         -e "s|\${INHERIT_LANG}|${INHERIT_LANG}|g"
 }
 
+# Existence check for sandbox_home paths. Those live in claude-session's
+# ~0750 home, which the wrapper (running as hactar during host-side prep)
+# cannot traverse — so a plain `-e` would wrongly skip every claude-session-
+# owned bind. Check as the sandbox user instead (DEC-012). Falls back to a
+# plain `-e` in same-UID degraded mode.
+sandbox_path_exists() {
+    if [ "$USE_SANDBOX_USER" = true ]; then
+        sudo -u "$SANDBOX_USER" test -e "$1"
+    else
+        [ -e "$1" ]
+    fi
+}
+
 # Environment scrub (DEC-011/012): start from an empty env and set only what a
 # session needs. For composed mode also assert srt's subprocess-env scrub so
 # bwrap-internal Bash subprocesses don't inherit host credentials.
@@ -191,7 +204,7 @@ build_bwrap_args() {
     while IFS=$'\t' read -r src tgt mode; do
         [ -z "$src" ] && continue
         src=$(printf '%s' "$src" | substitute); tgt=$(printf '%s' "$tgt" | substitute)
-        [ -e "$src" ] || { echo "claude-sandbox: skip sandbox_home bind (missing): $src" >&2; continue; }
+        sandbox_path_exists "$src" || { echo "claude-sandbox: skip sandbox_home bind (missing): $src" >&2; continue; }
         case "$mode" in
             rw)      BWRAP_ARGS+=(--bind    "$src" "$tgt") ;;
             *)       BWRAP_ARGS+=(--ro-bind "$src" "$tgt") ;;
