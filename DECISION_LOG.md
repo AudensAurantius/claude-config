@@ -1205,3 +1205,73 @@ that must persist and inform a future phase.
 - Design docs cite the bead that produced them and the DECs they
   relate to; the eventual binding DEC cites back to the design doc.
 - Per CLAUDE.md, this new documentation subdirectory is recorded here.
+
+---
+
+### DEC-016: `claude-session` owns its own Claude Code (and bun) install (2026-05-26)
+
+**Decision:** The `claude-session` principal gets its own Claude Code
+installation in its own home (`/home/claude-session/.local/share/
+claude/versions/...`, `~/.local/bin/claude`, and its own `~/.bun`),
+owned by `claude-session`. It does **not** share or borrow hactar's
+binary. The install is performed at provisioning time and is
+version-managed (see Consequences).
+
+**Context:** This falls out of the interaction of two prior decisions,
+discovered while trying to run the one-time OAuth flow (40s.3):
+
+- **DEC-011 composed mode (`srt`) does not remap paths** — the
+  sandboxed process sees the *real* filesystem, so `claude` must be on
+  `claude-session`'s *real* `PATH`, not bound in from elsewhere.
+- **DEC-012 gives hactar a `0700` home** (verified: `drwx------`).
+  `claude-session` cannot even traverse `/home/hactar`, so it cannot
+  read hactar's `~/.local/bin/claude`, `~/.local/share/claude`, or
+  `~/.bun` by any means short of loosening hactar's home permissions —
+  which would defeat the UID-separation guarantee DEC-012 exists to
+  provide.
+
+Sharing hactar's binary is therefore impossible in *both* modes
+without breaking DEC-012. A corollary, found at the same time: the
+pre-existing profile's standalone binds of hactar's `~/.local/...`
+claude paths into the sandbox were already broken under the
+`sudo -u claude-session` identity model (bwrap runs as
+`claude-session`, which can't read hactar's `0700` home) — they only
+appeared to work in the POC's same-UID / `--uid`-remap model.
+
+**Alternatives:**
+
+- *Share hactar's binary via bind-mount or `PATH`.* Rejected:
+  impossible under DEC-012's `0700` home; would require loosening
+  hactar's home permissions or punching ACL traversal holes into it,
+  defeating the isolation.
+- *System-wide install (`/usr/local`), shared by both users.*
+  Rejected (for now): Claude Code's installer is user-`$HOME`-oriented
+  (a system install is hacky, and per-`$HOME` state is still needed),
+  and a `claude-session`-owned install aligns with DEC-009 (OAuth in
+  its own home) and the principal-isolation model. Revisit only if
+  per-user duplication becomes a real cost.
+- *Bind only claude-session's own install back over the tmpfs home in
+  standalone mode.* Accepted as the standalone-mode mechanism (this is
+  the profile-binds fix), distinct from the composed-mode case where
+  no bind is involved at all.
+
+**Consequences:**
+
+- **Provisioning installs Claude Code + bun for `claude-session`** via
+  `sudo -u claude-session` + the official installer, version-pinned.
+  Wired into the install script(s). Tracked by ClaudeConfig-40s.15.6.
+- **The standalone profile's claude binds are corrected** to reference
+  `claude-session`'s own `~/.local/{bin,share}/claude` + `~/.bun`
+  (bound back over the tmpfs home), not hactar's.
+- **Version management** (`claude`/`bun`): Claude Code auto-updates by
+  default and exposes `claude update` (latest) and `claude install
+  <version>` (pin); bun exposes `bun upgrade`. The launcher can sync
+  `claude-session`'s versions to be ≥ hactar's before a session (a
+  follow-up bead); independent auto-update inside the sandbox is the
+  alternative but couples to network policy and version drift.
+- **Skill/agent/command sharing is a separate problem** with the same
+  `0700` root cause — hactar's `~/.claude/skills` is unreadable by
+  `claude-session` too. It is NOT solved by this DEC; see the
+  skill-overlay design (separate bead / Phase 2 profile work).
+- **OAuth (40s.3) is unblocked** once the install lands:
+  `claude-session` will have a `claude` to run the one-time flow.
