@@ -71,6 +71,19 @@ SRT_SETTINGS_OVERRIDE="${CLAUDE_SANDBOX_SRT_SETTINGS:-}"
 SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 EMITTER="$SELF_DIR/claude-sandbox-emit-srt-settings"
 
+# Per-project ACL granter (ClaudeConfig-40s.15.9). Resolve across the
+# installed layout ($PREFIX/share/claude-sandbox/scripts) and the repo layout
+# (sandbox/scripts); CLAUDE_SANDBOX_ACL_SCRIPT overrides.
+resolve_acl_script() {
+    local c
+    for c in "${CLAUDE_SANDBOX_ACL_SCRIPT:-}" \
+             "$SELF_DIR/../share/claude-sandbox/scripts/setup-claude-session-acls.sh" \
+             "$SELF_DIR/../scripts/setup-claude-session-acls.sh"; do
+        [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+    done
+    return 1
+}
+
 usage() {
     sed -n '/^# claude-sandbox/,/^# the separate-principal guarantee\./p' "${BASH_SOURCE[0]}" \
         | sed 's/^# \{0,1\}//'
@@ -225,6 +238,20 @@ build_bwrap_args() {
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
+
+# Grant claude-session traversal+rwX on the active project (DEC-012 / 40s.15.9)
+# before entering the sandbox, so the bind/access resolves. Real runs only
+# (dry-run must not mutate ACLs); separate-user mode only (same-UID needs no
+# ACL). Idempotent + fast on re-runs. Non-fatal: warn and continue on failure.
+if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ]; then
+    if acl_script="$(resolve_acl_script)"; then
+        "$acl_script" --user "$SANDBOX_USER" --home-dir "$USER_HOME" \
+            --project "$ACTIVE_PROJECT" >/dev/null \
+            || echo "claude-sandbox: warning — project ACL grant failed; sandbox may not access $ACTIVE_PROJECT" >&2
+    else
+        echo "claude-sandbox: warning — ACL script not found; sandbox may not access $ACTIVE_PROJECT" >&2
+    fi
+fi
 
 build_scrubbed_env
 
