@@ -38,9 +38,11 @@
 # Environment:
 #   CLAUDE_SANDBOX_PROFILE_DIR   override the profile lookup path
 #                                (default: ~/.config/claude-sandbox/profiles)
-#   CLAUDE_SANDBOX_SRT_CONFIG    srt --config path for composed mode
-#                                (default: ~/.config/claude-sandbox/srt.json;
-#                                 populated by 40s.15.2's emitter)
+#   CLAUDE_SANDBOX_SRT_SETTINGS  srt --settings path for composed mode
+#                                (default: ~/.config/claude-sandbox/srt-settings.json;
+#                                 populated by 40s.15.2's emitter). NB: srt's
+#                                 own default is ~/.srt-settings.json; we pass
+#                                 --settings explicitly for a deterministic path.
 #
 # Identity (DEC-012):
 #   The wrapper runs as the host user, does host-side prep, then switches to
@@ -60,7 +62,7 @@ MODE="composed"          # composed | standalone
 PROFILE_NAME="default"
 DRY_RUN=false
 PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
-SRT_CONFIG="${CLAUDE_SANDBOX_SRT_CONFIG:-$HOME/.config/claude-sandbox/srt.json}"
+SRT_SETTINGS="${CLAUDE_SANDBOX_SRT_SETTINGS:-$HOME/.config/claude-sandbox/srt-settings.json}"
 
 usage() {
     sed -n '/^# claude-sandbox/,/^# the separate-principal guarantee\./p' "${BASH_SOURCE[0]}" \
@@ -202,7 +204,7 @@ build_scrubbed_env
 
 if [ "$MODE" = "composed" ]; then
     SRT_ARGS=()
-    [ -f "$SRT_CONFIG" ] && SRT_ARGS=(--config "$SRT_CONFIG")  # 40s.15.2 emits this
+    [ -f "$SRT_SETTINGS" ] && SRT_ARGS=(--settings "$SRT_SETTINGS")  # 40s.15.2 emits this
     CMD=("${SCRUB_ENV[@]}" srt "${SRT_ARGS[@]}" claude "$@")
 else
     build_bwrap_args
