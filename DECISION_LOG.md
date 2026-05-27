@@ -799,6 +799,14 @@ more expensively.
   modeled on ClaudeConfig-40s.13 keeps drift visible. If srt
   introduces a breaking change, standalone mode is the fallback
   during the catch-up window.
+  - *Note (2026-05-26, ClaudeConfig-40s.15.1):* srt is **not** GA.
+    The npm package `@anthropic-ai/sandbox-runtime` latest dist-tag is
+    `0.0.52`; no `1.0.0` is published. The `srt` CLI's `--version`
+    misreports `1.0.0` (hardcoded string out of sync with
+    package.json) — do **not** read it as a GA signal. Version-gate on
+    `npm view @anthropic-ai/sandbox-runtime version` or the installed
+    `package.json`, never on `srt --version`. The beta-stability
+    stance above therefore stands unchanged.
 - **DEC-007 follow-up #2 (telemetry) is partially answered.** Hooks
   run on the host, outside the sandbox boundary. The OTEL Collector
   sidecar pattern (FOLLOWUP.md Q5) is the integration path; a
