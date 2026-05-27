@@ -297,7 +297,9 @@ build_scrubbed_env() {
         env -i
         "HOME=${SANDBOX_HOME}"
         "USER=${SANDBOX_USER}"
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        # claude-session's own bin dirs first so composed/oauth (which run its
+        # claude directly via this env, no bwrap re-setenv) resolve it.
+        "PATH=${SANDBOX_HOME}/.local/bin:${SANDBOX_HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         "TERM=${INHERIT_TERM}"
         "LANG=${INHERIT_LANG}"
     )
