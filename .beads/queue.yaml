@@ -6,7 +6,6 @@ research:
 review:
 - J121-y0i
 sandbox-wrapper:
-- ClaudeConfig-40s.15.9
 - ClaudeConfig-40s.15.10
 - ClaudeConfig-40s.15.7
 - ClaudeConfig-40s.15.8
