@@ -197,6 +197,12 @@ build_bwrap_args() {
             *)       BWRAP_ARGS+=(--ro-bind "$src" "$tgt") ;;
         esac
     done < <(yq -r '.sandbox_home[] | [.source, .target, (.mode // "ro")] | @tsv' "$PROFILE")
+    # Standalone network is ON/OFF only: bwrap has no L7 filtering, so it
+    # cannot domain-allowlist the way srt does (composed mode) via its built-in
+    # proxy. Domain-allowlisting for standalone is deferred to the DEC-013 SNI
+    # egress proxy (ClaudeConfig-ciw.3) routed in by ClaudeConfig-40s.15.5.
+    # Until then, `host` = full host network. The composed: profile section's
+    # allowed_domains does NOT apply here — that drives srt only.
     case "$(yq -r '.network.policy' "$PROFILE")" in
         host)  BWRAP_ARGS+=(--unshare-all --share-net) ;;
         none)  BWRAP_ARGS+=(--unshare-all) ;;

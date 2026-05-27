@@ -97,10 +97,12 @@ sandbox_home:
 worktree:
   policy: use-existing  # alternatives (Phase 3+): auto-create, disabled
 
-# Network policy. Phase 1 baseline: full host network (--share-net).
-# Future phases may add namespaced-network with explicit allowlists.
+# Network policy for STANDALONE mode (bwrap). ON/OFF only — bwrap has no L7
+# filtering. Composed mode (srt) ignores this and uses composed.network
+# .allowed_domains instead. Domain-allowlisting for standalone is deferred to
+# the DEC-013 SNI egress proxy (ClaudeConfig-ciw.3, wired by 40s.15.5).
 network:
-  policy: host  # alternatives (future): none, allowlist
+  policy: host  # alternatives: none (no net). allowlist is proxy-mediated, not here.
 
 # Environment policy. --clearenv strips inherited env, then the wrapper
 # sets only what the sandbox needs. Profiles never inject credentials
