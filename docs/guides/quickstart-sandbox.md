@@ -55,10 +55,17 @@ Read this carefully if your workflow touches credentials.
   `/sandbox` as the sole boundary on credentialed infrastructure is
   not advisable.** This is the gap the claude-config augmentation
   layer (DEC-011/012/013) closes.
-- **`srt` is in public preview.** No published GA target, weekly
-  releases since 2025-10-20, JSON config schema additive-only across
-  the v0.0.38 → v0.0.52 window observed. Operational guidance: pin
-  the version, re-verify on bump.
+- **`srt` is in public preview (not GA).** No published GA target,
+  weekly releases since 2025-10-20, JSON config schema additive-only
+  across the v0.0.38 → v0.0.52 window observed. Operational guidance:
+  pin the version, re-verify on bump. **Caveat: `srt --version`
+  misreports `1.0.0`** — a hardcoded CLI string out of sync with the
+  package. The real version is `npm view @anthropic-ai/sandbox-runtime
+  version` (currently `0.0.52`). Do not read `srt --version` as a GA
+  signal.
+- **`srt`'s config flag is `-s/--settings`** (default
+  `~/.srt-settings.json`), not `--config`. The wrapper passes
+  `--settings` explicitly.
 
 If your work is high-trust (production credentials, write access to
 shared infrastructure, sensitive customer data), wait for the
