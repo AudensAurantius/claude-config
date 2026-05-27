@@ -1079,6 +1079,21 @@ in-sandbox concerns (see Alternatives).
   though the broker makes their contents non-load-bearing,
   `denyRead` on `**/.env` removes the classifier's input. Belt-and-
   suspenders pattern.
+  - *Correction (2026-05-26, ClaudeConfig-40s.15.2):* this is
+    **macOS-only as stated**. On Linux, `srt`'s `denyRead` is
+    bubblewrap-based and matches **absolute paths / directory
+    subtrees only — filename globs like `**/.env` do NOT match**
+    (verified empirically; srt documents globs for macOS only). The
+    `.env`-anywhere-in-worktree case is therefore **unsolvable via
+    `denyRead` on Linux** — and `allowRead` directories can't have
+    files denied within them (srt issue #193) — so on Linux the
+    broker is not belt-and-suspenders for `.env`, it is the **sole**
+    defense. More broadly: composed-mode read protection rests
+    PRIMARILY on the DEC-012 UID boundary (claude-session cannot read
+    hactar's `0750` home regardless of `srt`), with `srt` `denyRead`
+    as narrow absolute-path defense-in-depth for claude-session's own
+    home. The credential `denyRead` baseline is accordingly emitted as
+    absolute `${SANDBOX_HOME}`-anchored paths, not globs.
 - **Tier 3 credentials still require human execution.** The broker
   makes tier-1 and (the implementation of) tier-2 mechanically
   safe; tier-3 (production-mutation, broad-scope external auth)
