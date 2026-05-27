@@ -26,13 +26,26 @@ USER_CONFIG ?= $(HOME)/.config
 BIN_DIR     ?= $(PREFIX)/bin
 SHARE_DIR   ?= $(PREFIX)/share/claude-sandbox
 PROFILE_DIR ?= $(USER_CONFIG)/claude-sandbox/profiles
+ETC_DIR     ?= /etc/claude-code
 
 # Install map: source-in-repo -> dest-on-host
 WRAPPER_SRC := sandbox/bin/claude-sandbox
 WRAPPER_DST := $(BIN_DIR)/claude-sandbox
 
+# Composed-mode srt-settings emitter (invoked by the wrapper; must sit
+# beside it so the wrapper's SELF_DIR lookup resolves it).
+EMITTER_SRC := sandbox/bin/claude-sandbox-emit-srt-settings
+EMITTER_DST := $(BIN_DIR)/claude-sandbox-emit-srt-settings
+
 PROFILE_SRC := sandbox/profiles/default.yaml
 PROFILE_DST := $(PROFILE_DIR)/default.yaml
+
+# Claude Code managed settings (system-wide, root-owned): locks off auto
+# mode host-wide (ClaudeConfig-40s.20 / DEC). NB: claude-session-scoped
+# permission deny rules (e.g. Read(**/.env)) are NOT here — they live in
+# claude-session's own settings, delivered by ClaudeConfig-40s.15.8.
+MANAGED_SETTINGS_SRC := claude/settings/managed-settings.json
+MANAGED_SETTINGS_DST := $(ETC_DIR)/managed-settings.json
 
 ACL_SCRIPT_SRC := sandbox/scripts/setup-claude-session-acls.sh
 ACL_SCRIPT_DST := $(SHARE_DIR)/scripts/setup-claude-session-acls.sh
@@ -40,7 +53,7 @@ ACL_SCRIPT_DST := $(SHARE_DIR)/scripts/setup-claude-session-acls.sh
 PROVISION_SRC  := sandbox/scripts/provision-claude-session.sh
 PROVISION_DST  := $(SHARE_DIR)/scripts/provision-claude-session.sh
 
-INSTALLED_FILES := $(WRAPPER_DST) $(PROFILE_DST) $(ACL_SCRIPT_DST) $(PROVISION_DST)
+INSTALLED_FILES := $(WRAPPER_DST) $(EMITTER_DST) $(PROFILE_DST) $(MANAGED_SETTINGS_DST) $(ACL_SCRIPT_DST) $(PROVISION_DST)
 
 # Use install(1) for proper mode + atomic replace + dir creation
 INSTALL          := install
@@ -96,7 +109,8 @@ install-test:
 	@echo "Test install to /tmp/claude-sandbox-test ..."
 	@$(MAKE) install \
 		PREFIX=/tmp/claude-sandbox-test \
-		USER_CONFIG=/tmp/claude-sandbox-test/config
+		USER_CONFIG=/tmp/claude-sandbox-test/config \
+		ETC_DIR=/tmp/claude-sandbox-test/etc/claude-code
 	@echo ""
 	@echo "Test artifacts under /tmp/claude-sandbox-test/. Inspect with:"
 	@echo "  find /tmp/claude-sandbox-test -type f"
@@ -132,7 +146,15 @@ $(WRAPPER_DST): $(WRAPPER_SRC)
 	@$(INSTALL_DIR) $(dir $@)
 	$(INSTALL_PROGRAM) $< $@
 
+$(EMITTER_DST): $(EMITTER_SRC)
+	@$(INSTALL_DIR) $(dir $@)
+	$(INSTALL_PROGRAM) $< $@
+
 $(PROFILE_DST): $(PROFILE_SRC)
+	@$(INSTALL_DIR) $(dir $@)
+	$(INSTALL_DATA) $< $@
+
+$(MANAGED_SETTINGS_DST): $(MANAGED_SETTINGS_SRC)
 	@$(INSTALL_DIR) $(dir $@)
 	$(INSTALL_DATA) $< $@
 
