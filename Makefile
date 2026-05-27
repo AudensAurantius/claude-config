@@ -82,8 +82,8 @@ install: $(INSTALLED_FILES)
 	@echo "Next steps:"
 	@echo "  1. Run \`make provision\` (or invoke $(PROVISION_DST) directly)"
 	@echo "     to create the claude-session user, /etc/subuid map, and ACLs."
-	@echo "  2. Complete claude-session's Anthropic OAuth on first invocation"
-	@echo "     of: claude-sandbox -p \"hello\""
+	@echo "  2. Complete claude-session's one-time Anthropic OAuth via the"
+	@echo "     hardened bootstrap: claude-sandbox --oauth"
 	@echo ""
 	@echo "Until step 1 lands, claude-sandbox runs in same-UID degraded mode."
 

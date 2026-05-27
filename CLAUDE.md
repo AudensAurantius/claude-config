@@ -202,6 +202,20 @@ Populate as discovered. Initial seed from the architecture discussion:
    `HOME=/home/claude-session` so the sandbox has its own OAuth
    refresh token, distinct from the user's interactive identity.
 
+4. **A `0700` home does not protect `0755` subdirs reached via an
+   inherited cwd.** `sudo` preserves the working directory, so a
+   `sudo -u claude-session` process launched from inside the user's
+   home keeps a cwd *fd* there; relative reads from that cwd check
+   only the immediate dir's perms, never re-checking the `0700` gate
+   above. So `~/.local`, `~/.config`, etc. (commonly `0755`) are
+   readable by `claude-session` if it inherits a cwd inside them.
+   The bwrap/srt sandbox is unaffected (its namespace excludes the
+   user's home), but **bare/unsandboxed `claude-session` invocations
+   must use a controlled cwd** — always go through `claude-sandbox`
+   (which `--chdir`s and runs a cwd guard) or `claude-sandbox --oauth`
+   (forces claude-session's own home). Never run bare `claude` as
+   `claude-session` from an arbitrary directory. (ClaudeConfig-40s.15.10.)
+
 ## Roadmap
 
 Active roadmap: [`docs/VISION.md`](docs/VISION.md) — seven-phase

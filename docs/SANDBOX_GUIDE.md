@@ -128,6 +128,30 @@ globally disable `bypassPermissions` because the sandbox relies on it.
 the classifier's trusted-infrastructure list. It cannot disable the
 `.env`-credential behavior, so it plays no role in this policy.
 
+### OAuth bootstrap and cwd safety
+
+claude-session's one-time Anthropic OAuth uses `claude-sandbox --oauth`,
+**not** bare `claude`. OAuth needs the login domains (not on the sandbox
+network allowlist), so `--oauth` runs claude-session's own claude
+*outside* the bwrap/srt boundary — but with **cwd forced to
+claude-session's home**, so no caller-inherited working directory is
+ever exposed.
+
+Why the cwd matters: a `0700` home blocks *path traversal* but not an
+*inherited cwd fd*. `sudo` preserves the cwd, so launching bare `claude`
+as claude-session from inside the user's home (e.g. `~/.local/share/...`,
+commonly `0755`) lets it read that directory via the inherited cwd,
+bypassing the `0700` gate. `--oauth` (and the composed/standalone cwd
+guard, which refuses the home root and `~/.dotfile` dirs) eliminate this.
+**Never run bare `claude` as claude-session from an arbitrary directory**
+— always go through `claude-sandbox`. See CLAUDE.md Common Pitfall #4 and
+ClaudeConfig-40s.15.10.
+
+Optional defense-in-depth (operator's call): tightening the perms on
+claude-session-reachable `~/.local*`/`~/.config` subdirs from `0755`
+narrows the inherited-cwd surface further, but is not required given the
+sandbox namespace and the `--oauth`/cwd-guard controls above.
+
 ### Sandbox awareness for sessions
 
 How to tell whether a Claude session is running inside the sandbox.

@@ -24,16 +24,27 @@
 #   DEC-013  egress mediation (broker + SNI proxy) — wired in a later bead
 #
 # Usage: claude-sandbox [--standalone] [--profile NAME] [--dry-run] [--] [claude-args...]
+#        claude-sandbox --oauth        # one-time claude-session OAuth bootstrap
 #        claude-sandbox --version
 #        claude-sandbox --help
 #
 # Options:
 #   --standalone     use the direct-bwrap path instead of srt (DEC-011 fallback)
+#   --oauth          one-time OAuth bootstrap for claude-session: runs its own
+#                    claude bare (no srt/bwrap — login domains aren't on the
+#                    sandbox allowlist) with cwd FORCED to claude-session's home,
+#                    so no caller-inherited cwd is ever exposed (40s.15.10).
+#                    Requires the claude-session user. Complete the browser flow;
+#                    the token lands in claude-session's ~/.claude/.credentials.json.
 #   --profile NAME   profile to load (default: "default")
 #                    looked up at $CLAUDE_SANDBOX_PROFILE_DIR/NAME.yaml
 #   --dry-run        print the resolved identity + exec line and exit; do not run
 #   --version        print claude-sandbox + bwrap + srt + claude versions
 #   --help, -h       show this help
+#
+# Cwd guard (40s.15.10): composed/standalone refuse to run from the home root
+# or a ~/.dotfile/config dir (sandboxing such a cwd would expose it to
+# claude-session). cd into a real project before invoking.
 #
 # Environment:
 #   CLAUDE_SANDBOX_PROFILE_DIR   override the profile lookup path
@@ -60,7 +71,7 @@ set -euo pipefail
 
 # ── Defaults / arg parsing ────────────────────────────────────────────────────
 
-MODE="composed"          # composed | standalone
+MODE="composed"          # composed | standalone | oauth
 PROFILE_NAME="default"
 DRY_RUN=false
 PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
@@ -92,6 +103,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --standalone) MODE="standalone"; shift ;;
+        --oauth)      MODE="oauth"; shift ;;
         --profile)    PROFILE_NAME="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         --help|-h)    usage; exit 0 ;;
@@ -117,7 +129,11 @@ require() {
         echo "claude-sandbox: required tool not on PATH: $1" >&2; exit 1; }
 }
 require yq; require jq; require getent
-if [ "$MODE" = "standalone" ]; then require bwrap; else require srt; fi
+case "$MODE" in
+    standalone) require bwrap ;;
+    composed)   require srt ;;
+    oauth)      : ;;  # bare cwd-controlled claude; needs neither bwrap nor srt
+esac
 
 # ── Host-side prep ────────────────────────────────────────────────────────────
 
@@ -125,6 +141,27 @@ USER_HOME="$HOME"
 INHERIT_TERM="${TERM:-xterm-256color}"
 INHERIT_LANG="${LANG:-C.UTF-8}"
 ACTIVE_PROJECT="$PWD"
+
+# Cwd guard (ClaudeConfig-40s.15.10): refuse to sandbox the home root or a
+# ~/.dotfile/config dir. Sandboxing such a cwd would --chdir there and grant
+# claude-session access to it (the inherited-cwd class of leak). Normal project
+# dirs (~/Source/..., /srv/..., a project's .worktrees/<x>) are unaffected —
+# only a FIRST path component starting with '.' directly under the home trips
+# it. Composed/standalone only; oauth forces claude-session's own home.
+assert_safe_cwd() {
+    if [ "$ACTIVE_PROJECT" = "$USER_HOME" ]; then
+        echo "claude-sandbox: refusing to sandbox the home root ($ACTIVE_PROJECT) — cd into a project." >&2
+        exit 1
+    fi
+    case "$ACTIVE_PROJECT" in
+        "$USER_HOME"/.*)
+            echo "claude-sandbox: refusing to sandbox a dotfile/config dir: $ACTIVE_PROJECT" >&2
+            echo "  Sandboxing here would grant claude-session access to it (inherited-cwd risk, 40s.15.10)." >&2
+            echo "  cd into a real project directory and re-run." >&2
+            exit 1 ;;
+    esac
+}
+if [ "$MODE" != "oauth" ]; then assert_safe_cwd; fi
 
 # Resolve the identity switch (DEC-012). Degrade gracefully for testability.
 SANDBOX_USER=$(yq -r '.sandbox_user.name' "$PROFILE")
@@ -242,8 +279,9 @@ build_bwrap_args() {
 # Grant claude-session traversal+rwX on the active project (DEC-012 / 40s.15.9)
 # before entering the sandbox, so the bind/access resolves. Real runs only
 # (dry-run must not mutate ACLs); separate-user mode only (same-UID needs no
-# ACL). Idempotent + fast on re-runs. Non-fatal: warn and continue on failure.
-if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ]; then
+# ACL); NOT in oauth mode (it forces claude-session's home, has no project).
+# Idempotent + fast on re-runs. Non-fatal: warn and continue on failure.
+if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ] && [ "$MODE" != "oauth" ]; then
     if acl_script="$(resolve_acl_script)"; then
         "$acl_script" --user "$SANDBOX_USER" --home-dir "$USER_HOME" \
             --project "$ACTIVE_PROJECT" >/dev/null \
@@ -255,7 +293,20 @@ fi
 
 build_scrubbed_env
 
-if [ "$MODE" = "composed" ]; then
+if [ "$MODE" = "oauth" ]; then
+    # One-time OAuth bootstrap (ClaudeConfig-40s.15.10). Runs claude-session's
+    # OWN claude bare (no srt/bwrap — the login/OAuth domains aren't on the
+    # sandbox allowlist) but with cwd FORCED to claude-session's home, so no
+    # caller-inherited cwd (the inherited-cwd leak) is ever in play. Requires
+    # the separate user; degraded same-UID mode has no separate identity to
+    # authenticate.
+    if [ "$USE_SANDBOX_USER" != true ]; then
+        echo "claude-sandbox --oauth: requires the '$SANDBOX_USER' user (run 'make provision' first)." >&2
+        exit 1
+    fi
+    # shellcheck disable=SC2016  # $SBHOME/$@ expand in the bash -c subshell, by design
+    CMD=("${SCRUB_ENV[@]}" "SBHOME=$SANDBOX_HOME" bash -c 'cd "$SBHOME" && exec claude "$@"' _ "$@")
+elif [ "$MODE" = "composed" ]; then
     if [ -n "$SRT_SETTINGS_OVERRIDE" ]; then
         SRT_SETTINGS_FILE="$SRT_SETTINGS_OVERRIDE"
         [ -f "$SRT_SETTINGS_FILE" ] || {
@@ -271,7 +322,12 @@ if [ "$MODE" = "composed" ]; then
             "$EMITTER" "$PROFILE" > "$SRT_SETTINGS_FILE"
         chmod 0644 "$SRT_SETTINGS_FILE"
     fi
-    CMD=("${SCRUB_ENV[@]}" srt --settings "$SRT_SETTINGS_FILE" claude "$@")
+    # Deterministic cwd: cd to the project rather than relying on sudo's
+    # inherited cwd (cwd-guard + 40s.15.10). Mirrors standalone's bwrap --chdir.
+    # shellcheck disable=SC2016  # $ACTIVE_PROJECT/$0/$@ expand in the bash -c subshell, by design
+    CMD=("${SCRUB_ENV[@]}" "ACTIVE_PROJECT=$ACTIVE_PROJECT" \
+         bash -c 'cd "$ACTIVE_PROJECT" && exec srt --settings "$0" claude "$@"' \
+         "$SRT_SETTINGS_FILE" "$@")
 else
     build_bwrap_args
     CMD=("${SCRUB_ENV[@]}" bwrap "${BWRAP_ARGS[@]}" -- claude "$@")

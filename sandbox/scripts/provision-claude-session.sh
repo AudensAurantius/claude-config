@@ -227,10 +227,16 @@ do_install() {
     echo ""
     echo "✓ Provisioning complete."
     echo ""
-    echo "Next: invoke claude-sandbox interactively to complete claude-session's"
-    echo "      one-time Anthropic OAuth flow (DEC-009). The token is written to"
-    echo "      ${claude_home}/.claude/ and is independent of your interactive"
-    echo "      identity."
+    echo "Next: run the hardened one-time OAuth bootstrap (DEC-009; 40s.15.10):"
+    echo ""
+    echo "      claude-sandbox --oauth"
+    echo ""
+    echo "      This runs ${claude_user}'s claude with cwd forced to its own"
+    echo "      home, so no caller-inherited cwd is exposed. Do NOT run bare"
+    echo "      'claude' as ${claude_user} from an arbitrary directory — a 0700"
+    echo "      home does not protect 0755 subdirs reached via an inherited cwd."
+    echo "      The token lands in ${claude_home}/.claude/.credentials.json,"
+    echo "      independent of your interactive identity."
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
