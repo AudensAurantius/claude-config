@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# claude-sandbox-emit-srt-settings — emit an srt-settings.json from a profile
+# YAML's `composed:` section, for `srt --settings` in composed mode (DEC-011,
+# ClaudeConfig-40s.15.2).
+#
+# Reads the profile's composed.{filesystem,network} section and emits a valid
+# srt settings document on stdout. Two invariants are enforced here and are
+# NOT overridable from the profile:
+#
+#   1. A narrow credential denyRead baseline (claude-session's own potential
+#      credential dirs, ABSOLUTE, ${SANDBOX_HOME}-anchored) is always
+#      prepended to filesystem.denyRead.
+#   2. network.allowLocalBinding is always false. sandbox-runtime issues
+#      #131/#225: setting it true also lifts the egress allowlist entirely.
+#
+# IMPORTANT — composed-mode credential model (ClaudeConfig-40s.15.2 finding):
+# srt's denyRead on Linux is bubblewrap-based and matches ABSOLUTE PATHS /
+# DIRECTORY SUBTREES ONLY — filename globs like **/.env or **/*.pem do NOT
+# match (verified empirically; srt's README documents globs for macOS only).
+# So the baseline is absolute, not glob. The PRIMARY credential defense in
+# composed mode is NOT this denyRead — it is the DEC-012 UID separation
+# (claude-session cannot read hactar's 0750 home regardless of srt) plus the
+# DEC-013 egress broker (credentials never enter the sandbox). The .env-in-
+# worktree case is unsolvable via denyRead (can't glob; and allowRead dirs
+# can't have files denied within them, srt issue #193) — that is the broker's
+# job. This baseline is narrow defense-in-depth for claude-session's own home.
+#
+# srt's Zod schema requires all of filesystem.{denyRead,allowRead,allowWrite,
+# denyWrite} and network.{allowedDomains,deniedDomains,allowLocalBinding} to
+# be present, so the emitter always writes the full shape.
+#
+# Usage:
+#   claude-sandbox-emit-srt-settings <profile.yaml>
+#
+# Runtime variables (substituted in profile values; exported by the wrapper):
+#   ACTIVE_PROJECT   cwd at wrapper invocation (writable)
+#   SANDBOX_HOME     claude-session's home (for the memory write-back path)
+
+set -euo pipefail
+
+PROFILE="${1:?usage: claude-sandbox-emit-srt-settings <profile.yaml>}"
+[ -f "$PROFILE" ] || { echo "emit-srt-settings: profile not found: $PROFILE" >&2; exit 1; }
+command -v yq >/dev/null || { echo "emit-srt-settings: yq not on PATH" >&2; exit 1; }
+command -v jq >/dev/null || { echo "emit-srt-settings: jq not on PATH" >&2; exit 1; }
+
+ACTIVE_PROJECT="${ACTIVE_PROJECT:-$PWD}"
+SANDBOX_HOME="${SANDBOX_HOME:-$HOME}"
+
+substitute() {
+    sed -e "s|\${ACTIVE_PROJECT}|${ACTIVE_PROJECT}|g" \
+        -e "s|\${SANDBOX_HOME}|${SANDBOX_HOME}|g"
+}
+
+# Narrow credential denyRead baseline: claude-session's OWN potential
+# credential dirs, ABSOLUTE (Linux srt matches absolute paths/subtrees, not
+# globs). Harmless if absent; protective if claude-session ever acquires them.
+# NB: claude-session's legitimate Anthropic OAuth at
+# ${SANDBOX_HOME}/.claude/.credentials.json is deliberately NOT denied — it is
+# the session's identity (DEC-009). hactar's credentials need no entry here:
+# the DEC-012 UID boundary already makes hactar's 0750 home unreadable.
+CRED_DENY_READ=(
+    "${SANDBOX_HOME}/.aws"
+    "${SANDBOX_HOME}/.ssh"
+    "${SANDBOX_HOME}/.gnupg"
+    "${SANDBOX_HOME}/.config/gh"
+    "${SANDBOX_HOME}/.docker/config.json"
+    "${SANDBOX_HOME}/.netrc"
+)
+
+# Profile-supplied arrays (substituted).
+mapfile -t DENY_EXTRA < <(yq -r '.composed.filesystem.deny_read_extra[]? // empty' "$PROFILE" | substitute)
+mapfile -t ALLOW_WRITE < <(yq -r '.composed.filesystem.allow_write[]? // empty' "$PROFILE" | substitute)
+mapfile -t ALLOWED_DOMAINS < <(yq -r '.composed.network.allowed_domains[]? // empty' "$PROFILE" | substitute)
+mapfile -t DENIED_DOMAINS < <(yq -r '.composed.network.denied_domains[]? // empty' "$PROFILE" | substitute)
+
+# One JSON array per line-list. `jq -Rn '[inputs]'` reads each raw line as a
+# string; select(length>0) drops the empty line printf emits for empty arrays.
+arr_to_json() { printf '%s\n' "$@" | jq -Rn '[inputs | select(length>0)]'; }
+
+DENY_READ_JSON=$(arr_to_json "${CRED_DENY_READ[@]}" "${DENY_EXTRA[@]}")
+ALLOW_WRITE_JSON=$(arr_to_json "${ALLOW_WRITE[@]}")
+ALLOWED_DOMAINS_JSON=$(arr_to_json "${ALLOWED_DOMAINS[@]}")
+DENIED_DOMAINS_JSON=$(arr_to_json "${DENIED_DOMAINS[@]}")
+
+jq -n \
+    --argjson denyRead "$DENY_READ_JSON" \
+    --argjson allowWrite "$ALLOW_WRITE_JSON" \
+    --argjson allowedDomains "$ALLOWED_DOMAINS_JSON" \
+    --argjson deniedDomains "$DENIED_DOMAINS_JSON" \
+    '{
+        filesystem: {
+            denyRead: $denyRead,
+            allowRead: [],
+            allowWrite: $allowWrite,
+            denyWrite: []
+        },
+        network: {
+            allowedDomains: $allowedDomains,
+            deniedDomains: $deniedDomains,
+            allowLocalBinding: false
+        }
+    }'

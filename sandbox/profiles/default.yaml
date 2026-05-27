@@ -113,3 +113,42 @@ environment:
     - { var: PATH, value: "${SANDBOX_HOME}/.bun/bin:${SANDBOX_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" }
     - { var: TERM, value: "${INHERIT_TERM}" }
     - { var: LANG, value: "${INHERIT_LANG}" }
+
+# Composed-mode (srt) configuration. claude-sandbox-emit-srt-settings reads
+# this section and emits the srt-settings.json passed via `srt --settings`
+# (DEC-011 composed mode). srt uses a deny-then-allow model for reads and an
+# allow-only model for writes — the INVERSE of the bwrap allow-list above, so
+# composed mode needs its own section rather than deriving from the binds.
+# Provisional schema; Phase 2 (ClaudeConfig-a92.1) formalizes/unifies it.
+#
+# The emitter ALWAYS prepends a narrow credential denyRead baseline
+# (claude-session's own potential credential dirs, ABSOLUTE — srt's Linux
+# denyRead matches absolute paths/subtrees only, NOT globs) and ALWAYS forces
+# network.allowLocalBinding=false (sandbox-runtime issues #131/#225: the flag
+# also lifts the egress allowlist). Neither is overridable from the profile.
+#
+# Composed-mode credential defense is PRIMARILY the DEC-012 UID boundary
+# (claude-session can't read hactar's 0750 home) + the DEC-013 broker, not
+# this denyRead. deny_read_extra entries must be ABSOLUTE paths to take effect
+# on Linux. The .env-in-worktree case is the broker's job (can't be globbed).
+composed:
+  filesystem:
+    # Extra denyRead globs beyond the always-on credential baseline.
+    deny_read_extra: []
+    # Writable paths (srt allow-only model). ${ACTIVE_PROJECT} and the memory
+    # write-back dir are substituted by the emitter at invocation.
+    allow_write:
+      - "${ACTIVE_PROJECT}"
+      - "${SANDBOX_HOME}/.claude/projects"
+  network:
+    # srt allow-only egress. Empty = no network. Wildcards (*.example.com) ok.
+    allowed_domains:
+      - api.anthropic.com
+      - registry.npmjs.org
+      - pypi.org
+      - files.pythonhosted.org
+      - github.com
+      - objects.githubusercontent.com
+      - raw.githubusercontent.com
+      - api.github.com
+    denied_domains: []

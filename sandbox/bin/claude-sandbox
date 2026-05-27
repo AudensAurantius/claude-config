@@ -38,11 +38,13 @@
 # Environment:
 #   CLAUDE_SANDBOX_PROFILE_DIR   override the profile lookup path
 #                                (default: ~/.config/claude-sandbox/profiles)
-#   CLAUDE_SANDBOX_SRT_SETTINGS  srt --settings path for composed mode
-#                                (default: ~/.config/claude-sandbox/srt-settings.json;
-#                                 populated by 40s.15.2's emitter). NB: srt's
-#                                 own default is ~/.srt-settings.json; we pass
-#                                 --settings explicitly for a deterministic path.
+#   CLAUDE_SANDBOX_SRT_SETTINGS  operator-provided srt --settings file for
+#                                composed mode, used as-is (operator ensures
+#                                the claude-session UID can read it). If unset,
+#                                composed mode generates settings from the
+#                                active profile via claude-sandbox-emit-srt-
+#                                settings into a /tmp path readable by
+#                                claude-session.
 #
 # Identity (DEC-012):
 #   The wrapper runs as the host user, does host-side prep, then switches to
@@ -62,7 +64,12 @@ MODE="composed"          # composed | standalone
 PROFILE_NAME="default"
 DRY_RUN=false
 PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
-SRT_SETTINGS="${CLAUDE_SANDBOX_SRT_SETTINGS:-$HOME/.config/claude-sandbox/srt-settings.json}"
+# Operator override: if set, used as-is (operator ensures claude-session can
+# read it). If unset, composed mode generates settings from the profile via
+# the emitter into a /tmp path the claude-session UID can read.
+SRT_SETTINGS_OVERRIDE="${CLAUDE_SANDBOX_SRT_SETTINGS:-}"
+SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+EMITTER="$SELF_DIR/claude-sandbox-emit-srt-settings"
 
 usage() {
     sed -n '/^# claude-sandbox/,/^# the separate-principal guarantee\./p' "${BASH_SOURCE[0]}" \
@@ -203,9 +210,22 @@ build_bwrap_args() {
 build_scrubbed_env
 
 if [ "$MODE" = "composed" ]; then
-    SRT_ARGS=()
-    [ -f "$SRT_SETTINGS" ] && SRT_ARGS=(--settings "$SRT_SETTINGS")  # 40s.15.2 emits this
-    CMD=("${SCRUB_ENV[@]}" srt "${SRT_ARGS[@]}" claude "$@")
+    if [ -n "$SRT_SETTINGS_OVERRIDE" ]; then
+        SRT_SETTINGS_FILE="$SRT_SETTINGS_OVERRIDE"
+        [ -f "$SRT_SETTINGS_FILE" ] || {
+            echo "claude-sandbox: CLAUDE_SANDBOX_SRT_SETTINGS not found: $SRT_SETTINGS_FILE" >&2; exit 1; }
+    else
+        [ -x "$EMITTER" ] || {
+            echo "claude-sandbox: settings emitter not found: $EMITTER" >&2; exit 1; }
+        # /tmp so the claude-session UID can read it; fixed per-user+profile
+        # name, overwritten each run (Phase 1 single-session; Phase 3+
+        # per-session worktrees need a per-session path).
+        SRT_SETTINGS_FILE="${TMPDIR:-/tmp}/claude-sandbox-srt.$(id -u).${PROFILE_NAME}.json"
+        ACTIVE_PROJECT="$ACTIVE_PROJECT" SANDBOX_HOME="$SANDBOX_HOME" \
+            "$EMITTER" "$PROFILE" > "$SRT_SETTINGS_FILE"
+        chmod 0644 "$SRT_SETTINGS_FILE"
+    fi
+    CMD=("${SCRUB_ENV[@]}" srt --settings "$SRT_SETTINGS_FILE" claude "$@")
 else
     build_bwrap_args
     CMD=("${SCRUB_ENV[@]}" bwrap "${BWRAP_ARGS[@]}" -- claude "$@")
