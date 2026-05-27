@@ -109,6 +109,43 @@ resolve_acl_script() {
 behind() {  # behind A B -> true if A sorts strictly lower than B
     [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
 }
+# Launch-time assembly (ClaudeConfig-40s.15.8, DEC-016): mirror the host
+# user's ~/.claude/{skills,agents,commands,scripts} into claude-session's OWN
+# ~/.claude so both modes see them — composed reads the real home, standalone
+# binds it via sandbox_home. The host's 0700 home means claude-session can't
+# read it directly, so the wrapper (running as the host user) stages to a
+# world-readable /tmp dir, then claude-session mirrors that into its home.
+# Phase-1 baseline = full mirror; omit/override is 40s.15.8.1.
+CLAUDE_DENY_RULES_JSON='["Read(**/.env)","Read(**/.env.*)","Read(**/*.pem)","Read(**/*.key)","Read(**/id_rsa*)","Read(**/id_ed25519*)","Read(**/id_ecdsa*)","Read(**/credentials.json)","Read(**/.aws/**)","Read(**/.ssh/**)"]'
+assemble_claude_dir() {
+    local stage d
+    stage="${TMPDIR:-/tmp}/claude-sandbox-claudedir.$(id -u)"
+    rm -rf "$stage"; mkdir -p "$stage"
+    for d in skills agents commands scripts; do
+        [ -d "$USER_HOME/.claude/$d" ] && cp -r "$USER_HOME/.claude/$d" "$stage/$d"
+    done
+    chmod -R a+rX "$stage" 2>/dev/null || true
+    for d in skills agents commands scripts; do
+        if [ -d "$stage/$d" ]; then
+            sudo -u "$SANDBOX_USER" -H bash -c \
+                'mkdir -p "$HOME/.claude" && rsync -a --delete "$1/" "$HOME/.claude/$2/"' _ "$stage/$d" "$d" \
+                || echo "claude-sandbox: warning — failed to mirror ~/.claude/$d to $SANDBOX_USER" >&2
+        fi
+    done
+    rm -rf "$stage"
+    # claude-session-scoped Claude Code permission deny rules (40s.16 re-home):
+    # app-layer matcher where **/.env etc. DO work; scoped to claude-session so
+    # the host user's interactive sessions are unaffected. Merged, idempotent.
+    sudo -u "$SANDBOX_USER" -H bash -c '
+        f="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude"
+        if [ -f "$f" ]; then
+            t=$(mktemp); jq --argjson d "$1" ".permissions = (.permissions // {}) + {deny: \$d}" "$f" > "$t" && mv "$t" "$f"
+        else
+            jq -n --argjson d "$1" "{permissions: {deny: \$d}}" > "$f"
+        fi' _ "$CLAUDE_DENY_RULES_JSON" \
+        || echo "claude-sandbox: warning — failed to set deny rules for $SANDBOX_USER" >&2
+}
+
 sync_claude_session_version() {
     local host_v cs_v
     host_v="$(basename "$(readlink -f "$USER_HOME/.local/bin/claude" 2>/dev/null)" 2>/dev/null)"
@@ -330,6 +367,13 @@ build_bwrap_args() {
 if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ] \
    && [ -z "${CLAUDE_SANDBOX_SKIP_VERSION_SYNC:-}" ]; then
     sync_claude_session_version
+fi
+
+# Mirror the host user's ~/.claude/{skills,agents,commands,scripts} into
+# claude-session's home + set its scoped deny rules (40s.15.8). Real runs +
+# separate-user only.
+if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ]; then
+    assemble_claude_dir
 fi
 
 # Grant claude-session traversal+rwX on the active project (DEC-012 / 40s.15.9)

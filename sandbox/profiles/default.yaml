@@ -97,6 +97,15 @@ sandbox_home:
   - { source: "${SANDBOX_HOME}/.claude.json",              target: "${SANDBOX_HOME}/.claude.json",                  mode: rw }
   - { source: "${SANDBOX_HOME}/.claude/settings.json",     target: "${SANDBOX_HOME}/.claude/settings.json",         mode: ro }
 
+  # Deployed claude-config tooling — mirrored into claude-session's own
+  # ~/.claude by the launcher's assemble_claude_dir (ClaudeConfig-40s.15.8),
+  # so these are claude-session's OWN paths (not cross-user). Composed mode
+  # reads them directly; standalone binds them here. ro.
+  - { source: "${SANDBOX_HOME}/.claude/skills",            target: "${SANDBOX_HOME}/.claude/skills",                mode: ro }
+  - { source: "${SANDBOX_HOME}/.claude/agents",            target: "${SANDBOX_HOME}/.claude/agents",                mode: ro }
+  - { source: "${SANDBOX_HOME}/.claude/commands",          target: "${SANDBOX_HOME}/.claude/commands",              mode: ro }
+  - { source: "${SANDBOX_HOME}/.claude/scripts",           target: "${SANDBOX_HOME}/.claude/scripts",               mode: ro }
+
 # Worktree policy. Phase 1 uses the canonical project path directly.
 # Phase 3 changes this to "auto-create" (per-session worktree on a
 # session-specific feature branch).
