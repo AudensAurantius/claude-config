@@ -224,6 +224,42 @@ do_install() {
         echo "  • skipping claude install: no valid version (set CLAUDE_VERSION=X.Y.Z, or install claude for ${host_user})" >&2
     fi
 
+    # 6. Node (LTS) + srt for claude-session (ClaudeConfig-40s.15.11; composed-
+    #    mode prerequisite). srt is a Node SCRIPT (#!/usr/bin/env node) — it
+    #    needs node at runtime — so claude-session gets its own Node + srt in
+    #    its ~/.local (DEC-016 model). node + npm are KEPT (srt runtime + future
+    #    srt updates, 40s.15.12). Pin srt via SRT_VERSION; Node via NODE_VERSION
+    #    (default: latest Node 22 LTS, checksum-verified). Idempotent on the
+    #    installed srt package version.
+    local srt_version arch srt_pkg_json cur_srt
+    srt_version="${SRT_VERSION:-0.0.52}"
+    arch="$(uname -m)"; [ "$arch" = "x86_64" ] && arch="x64"
+    srt_pkg_json="${claude_home}/.local/lib/node_modules/@anthropic-ai/sandbox-runtime/package.json"
+    cur_srt=""
+    [ -f "$srt_pkg_json" ] && cur_srt="$(jq -r .version "$srt_pkg_json" 2>/dev/null || true)"
+    if [ "$cur_srt" = "$srt_version" ]; then
+        echo "  ✓ ${claude_user} already has srt ${srt_version} (Node present)"
+    else
+        echo "→ installing Node (${NODE_VERSION:-latest-v22.x}) + srt ${srt_version} for ${claude_user} ..."
+        sudo -u "$claude_user" -H bash -s -- "$arch" "$srt_version" "${NODE_VERSION:-latest-v22.x}" <<'NODESRT'
+set -euo pipefail
+arch="$1"; srt_version="$2"; node_dir="$3"
+base="https://nodejs.org/dist/${node_dir}"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
+curl -fsSLO "$base/SHASUMS256.txt"
+tarball="$(grep -oE "node-v[0-9.]+-linux-${arch}\.tar\.xz" SHASUMS256.txt | head -1)"
+[ -n "$tarball" ] || { echo "could not resolve Node tarball for ${arch} in ${base}" >&2; exit 1; }
+curl -fsSLO "$base/$tarball"
+grep " ${tarball}$" SHASUMS256.txt | sha256sum -c -          # integrity gate
+rm -rf "$HOME/.local/node"; mkdir -p "$HOME/.local/node" "$HOME/.local/bin"
+tar -xJf "$tarball" -C "$HOME/.local/node" --strip-components=1
+for b in node npm npx; do ln -sf "$HOME/.local/node/bin/$b" "$HOME/.local/bin/$b"; done
+"$HOME/.local/node/bin/npm" install -g --prefix "$HOME/.local" "@anthropic-ai/sandbox-runtime@${srt_version}" >/dev/null 2>&1
+echo "    node $("$HOME/.local/bin/node" --version), srt ${srt_version} -> $HOME/.local/bin/srt"
+NODESRT
+        echo "  ✓ Node + srt ${srt_version} installed for ${claude_user}"
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""

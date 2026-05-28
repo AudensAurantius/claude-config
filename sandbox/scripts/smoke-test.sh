@@ -37,17 +37,21 @@ expect() {  # expect <label> <actual> <wanted>
 }
 
 # Run from a clean throwaway project dir (passes the wrapper's cwd guard).
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+# srt/claude may write sandbox-user-owned files (e.g. node_modules) here; the
+# sudo fallback cleans those on exit.
+work="$(mktemp -d)"; trap 'rm -rf "$work" 2>/dev/null || sudo rm -rf "$work" 2>/dev/null' EXIT
 cd "$work" || exit 1
 
 run_mode() {  # run_mode <label> <sentinel> [extra wrapper flags...]
     local label="$1" sentinel="$2"; shift 2
     local out
-    out="$(timeout 180 "$WRAPPER" "$@" -p "Reply with exactly: $sentinel" 2>&1 | tail -1)"
-    case "$out" in
-        *"$sentinel"*) ok "$label: claude -p returned $sentinel" ;;
-        *) bad "$label: claude -p did not return $sentinel (got: ${out:0:80})" ;;
-    esac
+    out="$(timeout 180 "$WRAPPER" "$@" -p "Reply with exactly: $sentinel" 2>&1)"
+    # grep the whole output: claude -p may emit a trailing newline / extra lines.
+    if printf '%s' "$out" | grep -q -- "$sentinel"; then
+        ok "$label: claude -p returned $sentinel"
+    else
+        bad "$label: claude -p did not return $sentinel (got: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-80))"
+    fi
 }
 
 echo "== claude-sandbox smoke test =="
@@ -58,7 +62,7 @@ run_mode "standalone" "STANDALONE_OK" --standalone
 
 echo "[composed] end-to-end (needs srt available to $SANDBOX_USER)"
 if sudo -u "$SANDBOX_USER" -H env PATH="$SANDBOX_HOME/.local/bin:$SANDBOX_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
-        command -v srt >/dev/null 2>&1; then
+        bash -c 'command -v srt' >/dev/null 2>&1; then
     run_mode "composed" "COMPOSED_OK"
 else
     skipt "composed: srt not available to $SANDBOX_USER (provision-srt prerequisite bead)"
