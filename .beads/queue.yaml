@@ -1,3 +1,12 @@
+polyglot-foundation:
+- ClaudeConfig-58n.1
+- ClaudeConfig-2s3.1
+- ClaudeConfig-2s3.2
+- ClaudeConfig-58n.2
+- ClaudeConfig-58n.3
+- ClaudeConfig-2s3.3
+- ClaudeConfig-2s3.5
+- ClaudeConfig-2s3.4
 research:
 - J121-1aj
 - J121-2ou
@@ -6,9 +15,7 @@ research:
 review:
 - J121-y0i
 sandbox-wrapper:
-- ClaudeConfig-40s.19
 - ClaudeConfig-40s.15.8.1
-- ClaudeConfig-40s.21
 - ClaudeConfig-40s.15.5
 skills:
 - J121-9kp.5
