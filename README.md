@@ -46,7 +46,7 @@ goals, and guiding principles.
 ```bash
 git clone <remote> ~/Source/claude-config
 cd ~/Source/claude-config
-make install               # deploys to canonical locations; non-destructive defaults
+just install               # deploys to canonical locations; non-destructive defaults
 ```
 
 Once Phase 1 ships:

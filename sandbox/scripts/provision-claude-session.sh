@@ -100,6 +100,10 @@ if [ "$(id -u)" -ne 0 ]; then
     # builtin echo prints anything starting with `--` literally (it
     # only honors -n/-e/-E), but that's not portable across shells
     # and the next reader shouldn't have to know that to feel safe.
+    # SC2046: word-splitting is intentional — each conditional emits either
+    # zero words (no flag) or exactly one (--uninstall / --no-acls). Quoting
+    # would pass an empty-string argument when the condition is false.
+    # shellcheck disable=SC2046
     exec sudo -E "${BASH_SOURCE[0]}" \
         $( [ "$mode" = "uninstall" ] && printf '%s\n' --uninstall ) \
         --user "$claude_user" \
