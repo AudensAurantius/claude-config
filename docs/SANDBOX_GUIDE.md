@@ -159,6 +159,43 @@ What capabilities are different (read-only `~/.claude/`, writable
 worktree at `~/Source/claude-config/`, no environment-resident
 credentials, `bd` access constrained per Phase 5+).
 
+### Hooks and the supported-interpreter set
+
+Per DEC-017 and DEC-020, sandbox-side hook scripts come in two tiers
+with different language constraints:
+
+**Tier 1 — system-shipped fast-path hooks** (PreToolUse handlers that
+fire on every Bash call: config-guard, git-guard, audit, telemetry).
+These are written in **Lua/LuaJIT** for sub-millisecond cold-start
+(Python's ~50 ms × N tool calls is user-perceptible at session scale).
+LuaJIT, lyaml, and lua-cjson are provisioned in claude-session's home
+during install (`just provision`); the wrapper sets `~/.local/bin/lua`
+→ `/usr/bin/luajit` so `#!/usr/bin/env lua` resolves to the JIT.
+
+**Tier 2 — project-specific hooks** under `<project>/.claude-session/
+hooks/`. Each project decides what guards or workflows are appropriate
+to its scope. Authors pick the most natural interpreter via shebang:
+
+| Interpreter | Provisioned by | Typical fit |
+|---|---|---|
+| `#!/usr/bin/env python3` | uv project + pipx provisioning (DEC-019) | Python projects; data-shape validation; `pyyaml`/`requests` available |
+| `#!/usr/bin/env node` | 40s.15.11 (per-user Node + srt) | Node projects; JSON-heavy logic |
+| `#!/usr/bin/env bash` | system (universal) | shell-level state checks; quick wrappers |
+| `#!/usr/bin/env perl` | system (verified at `just provision`) | text-mangling, regex-heavy guards |
+| `#!/usr/bin/env lua` | 58n.1 / Tier 1 toolchain | shared with Tier 1; minimal startup overhead |
+
+The supported set is intentionally a small, common-denominator group
+— extending it requires explicit provisioning (DEC-016 model: claude-
+session owns its tools per-user) plus a smoke-test verification entry
+in `sandbox/scripts/smoke-test.sh`. Don't reach for compiled languages
+in this tier; the per-project build/distribute overhead is wrong for
+small hook scripts.
+
+If `perl` warns "NOT available" during provisioning, the host is
+running a minimal image (some container bases strip it). Fix:
+`apt-get install perl-base` (or distro equivalent) and re-run
+`just provision`.
+
 ### The recommend-and-execute pattern
 
 How agents should format privileged-command recommendations so the

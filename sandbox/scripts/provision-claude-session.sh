@@ -307,6 +307,23 @@ LUASETUP
         echo "  ✓ ${claude_user} already has the Lua toolchain (${lua_marker_cur})"
     fi
 
+    # 8. Multi-interpreter availability check (ClaudeConfig-58n.2; DEC-020).
+    #    Project-specific hooks under <project>/.claude-session/hooks/ can be
+    #    written in any of the supported interpreters via #! shebang
+    #    dispatch. Python (uv), Node (40s.15.11), Lua (step 7 above), and
+    #    Bash (system) are explicitly provisioned. Perl is essentially
+    #    universal on Debian/Ubuntu but absent from some minimal containers
+    #    — warn loudly without failing so the operator can `apt-get install
+    #    perl-base` if a project needs it.
+    if sudo -u "$claude_user" -H perl -e 'exit 0' 2>/dev/null; then
+        local perl_ver
+        perl_ver="$(sudo -u "$claude_user" -H perl -e 'print sprintf("%vd", $^V)' 2>/dev/null)"
+        echo "  ✓ perl ${perl_ver} available to ${claude_user} (system)"
+    else
+        echo "  ⚠ perl NOT available to ${claude_user} — project hooks with #!/usr/bin/env perl will fail" >&2
+        echo "    Install with: apt-get install perl-base" >&2
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""
