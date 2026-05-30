@@ -260,6 +260,49 @@ NODESRT
         echo "  ✓ Node + srt ${srt_version} installed for ${claude_user}"
     fi
 
+    # 7. Lua toolchain for claude-session (ClaudeConfig-58n.1; DEC-017 fast-path
+    #    PreToolUse hooks + DEC-020 multi-interpreter project hooks). LuaJIT
+    #    gives ~1 ms cold-start vs Python's ~50 ms; lyaml + lua-cjson cover the
+    #    config + JSON-I/O surface for hook handlers.
+    #
+    #    Installed via Debian/Ubuntu packages rather than build-from-source —
+    #    deviates from the 40s.15.11 heredoc-build pattern because (a) the
+    #    apt-shipped LuaJIT/lyaml/lua-cjson are tested and current enough for
+    #    DEC-017's hot-path use case, (b) build-from-source would pull in
+    #    libyaml-dev + gcc + make as additional host deps. /usr/share/lua/5.1/
+    #    and /usr/lib/.../lua/5.1/ are world-readable, so DEC-016's "claude-
+    #    session owns its tools" rationale (host 0700 home blocking) does not
+    #    apply to system libs. claude-session only needs a per-user `lua`
+    #    symlink so #!/usr/bin/env lua resolves to LuaJIT (not the slower
+    #    puc-rio lua, if that's also installed).
+    local lua_marker_file lua_marker_desired lua_marker_cur
+    lua_marker_file="${claude_home}/.local/share/claude-session/lua-toolchain.version"
+    lua_marker_desired="luajit=$(dpkg-query -W -f='${Version}' luajit 2>/dev/null || echo missing) lyaml=$(dpkg-query -W -f='${Version}' lua-yaml 2>/dev/null || echo missing) cjson=$(dpkg-query -W -f='${Version}' lua-cjson 2>/dev/null || echo missing)"
+    lua_marker_cur=""
+    [ -f "$lua_marker_file" ] && lua_marker_cur="$(cat "$lua_marker_file" 2>/dev/null || true)"
+    if echo "$lua_marker_desired" | grep -q missing || [ "$lua_marker_cur" != "$lua_marker_desired" ]; then
+        echo "→ installing Lua toolchain (luajit + lua-yaml + lua-cjson) ..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            luajit lua-yaml lua-cjson >/dev/null
+        # Recompute after install — versions now resolved
+        lua_marker_desired="luajit=$(dpkg-query -W -f='${Version}' luajit) lyaml=$(dpkg-query -W -f='${Version}' lua-yaml) cjson=$(dpkg-query -W -f='${Version}' lua-cjson)"
+        sudo -u "$claude_user" -H bash -s -- "$lua_marker_file" "$lua_marker_desired" <<'LUASETUP'
+set -euo pipefail
+marker="$1"; desired="$2"
+mkdir -p "$HOME/.local/bin" "$(dirname "$marker")"
+luajit_bin="$(command -v luajit)"
+[ -n "$luajit_bin" ] || { echo "luajit not on PATH after apt install" >&2; exit 1; }
+# `#!/usr/bin/env lua` should resolve to LuaJIT, not puc-rio (if installed)
+ln -sf "$luajit_bin" "$HOME/.local/bin/lua"
+# Smoke: require lyaml + cjson via the per-user lua symlink (proves PATH + module load)
+"$HOME/.local/bin/lua" -e "require('lyaml'); require('cjson'); print('    lua=' .. _VERSION .. '  lyaml + cjson loaded')"
+echo "$desired" > "$marker"
+LUASETUP
+        echo "  ✓ Lua toolchain installed for ${claude_user} (${lua_marker_desired})"
+    else
+        echo "  ✓ ${claude_user} already has the Lua toolchain (${lua_marker_cur})"
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""
