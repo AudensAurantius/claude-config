@@ -8,6 +8,10 @@
 #   - runs as the sandbox UID (not the host user)
 #   - no other users' homes are visible
 #   - the environment is scrubbed of credential-ish vars
+# Plus a multi-interpreter availability survey (ClaudeConfig-58n.3,
+# DEC-020): python3, node, bash, perl, lua callable as the sandbox UID
+# (project hooks under .claude-session/hooks/ rely on shebang dispatch
+# into this set).
 #
 # Composed mode is SKIPPED when srt is not available to the sandbox user
 # (its own prerequisite bead). Standalone needs no srt.
@@ -81,6 +85,29 @@ secrets="$(printf '%s\n' "$probe"| grep '^SECRETS=' | cut -d= -f2)"
 expect "runs as $SANDBOX_USER (not host user)" "$who" "$SANDBOX_USER"
 expect "no other users' homes visible" "${others:-?}" "0"
 expect "environment scrubbed of credential-ish vars" "${secrets:-?}" "0"
+
+echo "[interpreters] availability as $SANDBOX_USER (DEC-020 project-hook shebang dispatch)"
+# Identity + PATH are identical between composed and standalone modes
+# (both run as claude-session with the wrapper's scrubbed PATH), so a
+# single sudo-as-$SANDBOX_USER check covers both. PATH below mirrors
+# the wrapper's env-scrub block so claude-session's per-user binaries
+# (e.g. ~/.local/bin/lua → /usr/bin/luajit) resolve as they would in
+# a live session.
+interp_path="$SANDBOX_HOME/.local/bin:$SANDBOX_HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+for spec in \
+    "python3:python3 --version" \
+    "node:node --version" \
+    "bash:bash --version" \
+    "perl:perl -e exit" \
+    "lua:lua -v"; do
+    name="${spec%%:*}"; cmd="${spec#*:}"
+    if sudo -u "$SANDBOX_USER" -H env -i HOME="$SANDBOX_HOME" PATH="$interp_path" \
+            bash -c "$cmd" >/dev/null 2>&1; then
+        ok "$name callable via #!/usr/bin/env $name"
+    else
+        bad "$name NOT callable (project hooks via #!/usr/bin/env $name will fail)"
+    fi
+done
 
 echo "== result: $pass passed, $fail failed, $skip skipped =="
 [ "$fail" -eq 0 ]
