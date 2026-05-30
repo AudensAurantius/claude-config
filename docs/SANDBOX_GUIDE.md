@@ -128,12 +128,73 @@ globally disable `bypassPermissions` because the sandbox relies on it.
 the classifier's trusted-infrastructure list. It cannot disable the
 `.env`-credential behavior, so it plays no role in this policy.
 
+### OAuth bootstrap and cwd safety
+
+claude-session's one-time Anthropic OAuth uses `claude-sandbox --oauth`,
+**not** bare `claude`. OAuth needs the login domains (not on the sandbox
+network allowlist), so `--oauth` runs claude-session's own claude
+*outside* the bwrap/srt boundary — but with **cwd forced to
+claude-session's home**, so no caller-inherited working directory is
+ever exposed.
+
+Why the cwd matters: a `0700` home blocks *path traversal* but not an
+*inherited cwd fd*. `sudo` preserves the cwd, so launching bare `claude`
+as claude-session from inside the user's home (e.g. `~/.local/share/...`,
+commonly `0755`) lets it read that directory via the inherited cwd,
+bypassing the `0700` gate. `--oauth` (and the composed/standalone cwd
+guard, which refuses the home root and `~/.dotfile` dirs) eliminate this.
+**Never run bare `claude` as claude-session from an arbitrary directory**
+— always go through `claude-sandbox`. See CLAUDE.md Common Pitfall #4 and
+ClaudeConfig-40s.15.10.
+
+Optional defense-in-depth (operator's call): tightening the perms on
+claude-session-reachable `~/.local*`/`~/.config` subdirs from `0755`
+narrows the inherited-cwd surface further, but is not required given the
+sandbox namespace and the `--oauth`/cwd-guard controls above.
+
 ### Sandbox awareness for sessions
 
 How to tell whether a Claude session is running inside the sandbox.
 What capabilities are different (read-only `~/.claude/`, writable
 worktree at `~/Source/claude-config/`, no environment-resident
 credentials, `bd` access constrained per Phase 5+).
+
+### Hooks and the supported-interpreter set
+
+Per DEC-017 and DEC-020, sandbox-side hook scripts come in two tiers
+with different language constraints:
+
+**Tier 1 — system-shipped fast-path hooks** (PreToolUse handlers that
+fire on every Bash call: config-guard, git-guard, audit, telemetry).
+These are written in **Lua/LuaJIT** for sub-millisecond cold-start
+(Python's ~50 ms × N tool calls is user-perceptible at session scale).
+LuaJIT, lyaml, and lua-cjson are provisioned in claude-session's home
+during install (`just provision`); the wrapper sets `~/.local/bin/lua`
+→ `/usr/bin/luajit` so `#!/usr/bin/env lua` resolves to the JIT.
+
+**Tier 2 — project-specific hooks** under `<project>/.claude-session/
+hooks/`. Each project decides what guards or workflows are appropriate
+to its scope. Authors pick the most natural interpreter via shebang:
+
+| Interpreter | Provisioned by | Typical fit |
+|---|---|---|
+| `#!/usr/bin/env python3` | uv project + pipx provisioning (DEC-019) | Python projects; data-shape validation; `pyyaml`/`requests` available |
+| `#!/usr/bin/env node` | 40s.15.11 (per-user Node + srt) | Node projects; JSON-heavy logic |
+| `#!/usr/bin/env bash` | system (universal) | shell-level state checks; quick wrappers |
+| `#!/usr/bin/env perl` | system (verified at `just provision`) | text-mangling, regex-heavy guards |
+| `#!/usr/bin/env lua` | 58n.1 / Tier 1 toolchain | shared with Tier 1; minimal startup overhead |
+
+The supported set is intentionally a small, common-denominator group
+— extending it requires explicit provisioning (DEC-016 model: claude-
+session owns its tools per-user) plus a smoke-test verification entry
+in `sandbox/scripts/smoke-test.sh`. Don't reach for compiled languages
+in this tier; the per-project build/distribute overhead is wrong for
+small hook scripts.
+
+If `perl` warns "NOT available" during provisioning, the host is
+running a minimal image (some container bases strip it). Fix:
+`apt-get install perl-base` (or distro equivalent) and re-run
+`just provision`.
 
 ### The recommend-and-execute pattern
 

@@ -19,14 +19,28 @@ reference documentation. See:
 
 This repo's contents are source-of-truth; the installer deploys them to
 canonical host locations. The repository is self-contained: chezmoi's
-role contracts to cloning the repo and invoking `make install`.
+role contracts to cloning the repo and invoking `just install`.
 
 ```bash
 git clone <remote> ~/Source/claude-config
 cd ~/Source/claude-config
-make install               # deploys to canonical locations; non-destructive by default
-make install-quiet         # non-interactive: accept all installer defaults
-make uninstall             # reverse install, restoring timestamped backups
+just install               # deploys to canonical locations; non-destructive by default
+just install-test          # deploy to /tmp/claude-sandbox-test (sanity check, no real deploy)
+just uninstall             # reverse install (does NOT unprovision claude-session)
+just provision             # create claude-session user + subuid + ACLs (sudo)
+just                       # list all recipes (sync / lint / fmt / test / smoke / check / …)
+```
+
+Quality gates (DEC-022; per-language native tools, orchestrated by `just`):
+
+```bash
+just sync                  # uv sync the dev .venv
+just lint                  # ruff check + mypy on src/
+just fmt-check             # ruff format --check
+just shellcheck            # shellcheck all sandbox/*.sh
+just test                  # pytest (when 2s3.3 lands)
+just check                 # full gate: lint + fmt-check + shellcheck + test
+just smoke                 # sandbox/scripts/smoke-test.sh (composed + standalone)
 ```
 
 Smoke test once Phase 1 ships:
@@ -47,7 +61,8 @@ for the deployment philosophy and per-file behavior categories.
 claude-config/
 ├── CLAUDE.md                       # this file
 ├── DECISION_LOG.md                 # architectural decisions with rationale
-├── Makefile                        # platform-aware installer entry point
+├── justfile                        # polyglot orchestrator (install map, lint/test/build recipes; DEC-021)
+├── pyproject.toml                  # uv-managed Python project (DEC-019)
 ├── claude/                         # Claude Code config — installed under ~/.claude/
 │   ├── CLAUDE.md.snippet           # marker-block content for ~/.claude/CLAUDE.md
 │   ├── settings/
@@ -82,7 +97,7 @@ The installer maps source paths under `claude/` and `sandbox/` to
 canonical host locations. Other platforms map to their analogues; the
 installer abstracts those differences so the source layout remains
 stable. Source paths under `claude/` and `sandbox/` are read-only at
-runtime — edits go through the repo, then `make install`.
+runtime — edits go through the repo, then `just install`.
 
 | Source (in repo) | Installed to | Behavior | Notes |
 |---|---|---|---|
@@ -94,7 +109,7 @@ runtime — edits go through the repo, then `make install`.
 | `sandbox/sbin/claude-sandbox-priv` | `/usr/local/sbin/claude-sandbox-priv` | Direct install | Root-only; namespace setup |
 | `sandbox/etc/sudoers.d/claude-sandbox` | `/etc/sudoers.d/claude-sandbox` | Direct install | NOPASSWD for the priv script |
 | `sandbox/profiles/*.yaml` | `~/.config/claude-sandbox/profiles/*.yaml` | Direct install | Read by the wrapper at runtime |
-| `sandbox/scripts/provision-claude-session.sh` | runs once during `make install` | (provisioning script) | Creates user, sets ACLs |
+| `sandbox/scripts/provision-claude-session.sh` | invoked via `just provision` after install | (provisioning script) | Creates user, sets ACLs, provisions Lua/Node toolchains |
 
 Behavior categories (see [DEC-004](DECISION_LOG.md#dec-004-installer-based-deployment-with-non-destructive-defaults-2026-05-04)):
 
@@ -128,8 +143,17 @@ Inside a sandboxed session, `claude-session` sees:
 
 ## Coding Conventions
 
-- **Style:** shell scripts pass `shellcheck`; Python (where used) ruff
-  + mypy strict; YAML lints via yamllint.
+- **Style:** Python ruff + mypy strict (DEC-019, DEC-022); shell
+  scripts pass `shellcheck`; YAML lints via the pre-commit
+  `check-yaml` hook. All gated through `just check` (single composite
+  recipe; see "Build & Run").
+- **Quality gates:** `just check` runs ruff + mypy + ruff-format-check
+  + shellcheck + pytest + bats. Same gate fires automatically via
+  pre-commit (configured in `.pre-commit-config.yaml`; bd's
+  `.beads/hooks/pre-commit` stacks the framework on top of bd's own
+  pre-commit logic — no separate `pre-commit install` step needed).
+  Bootstrap: `just sync && just pre-commit-run` to confirm the gate
+  is green before committing.
 - **Commits:** Conventional Commits
   (`feat/fix/docs/refactor/test/chore`), with `Co-Authored-By` trailer
   when the change was AI-assisted.
@@ -201,6 +225,20 @@ Populate as discovered. Initial seed from the architecture discussion:
    Claude authenticates with. The design uses
    `HOME=/home/claude-session` so the sandbox has its own OAuth
    refresh token, distinct from the user's interactive identity.
+
+4. **A `0700` home does not protect `0755` subdirs reached via an
+   inherited cwd.** `sudo` preserves the working directory, so a
+   `sudo -u claude-session` process launched from inside the user's
+   home keeps a cwd *fd* there; relative reads from that cwd check
+   only the immediate dir's perms, never re-checking the `0700` gate
+   above. So `~/.local`, `~/.config`, etc. (commonly `0755`) are
+   readable by `claude-session` if it inherits a cwd inside them.
+   The bwrap/srt sandbox is unaffected (its namespace excludes the
+   user's home), but **bare/unsandboxed `claude-session` invocations
+   must use a controlled cwd** — always go through `claude-sandbox`
+   (which `--chdir`s and runs a cwd guard) or `claude-sandbox --oauth`
+   (forces claude-session's own home). Never run bare `claude` as
+   `claude-session` from an arbitrary directory. (ClaudeConfig-40s.15.10.)
 
 ## Roadmap
 

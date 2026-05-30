@@ -155,27 +155,39 @@ The `denyRead` list above closes the documented "permissive default"
 gap. Tune for your environment — add corporate proxies, package
 mirrors, internal docs sites as needed in `network.allowedDomains`.
 
+> **Note:** the glob patterns shown here (`~/.aws/**`, `**/.env`) are
+> the documented macOS syntax. On Linux the same bubblewrap-based
+> matching likely applies as for `srt` (absolute paths / subtrees
+> only — see the Linux caveat under "Configure `srt`" below). Verified
+> for `srt`; not independently verified for `/sandbox`'s own matcher —
+> prefer absolute paths on Linux until confirmed.
+
 **Inside a session,** invoke `/sandbox` (the slash command) to
 activate. Confirm with `/sandbox status`.
 
 ## Configure `srt`
 
-`srt` reads `~/.config/srt/config.json` (or `--config <path>`). A
-starter config that mirrors the `/sandbox` settings above:
+`srt` reads `~/.srt-settings.json` by default, or a path passed via
+`-s`/`--settings`. srt's Zod schema **requires all of** the keys
+below — `filesystem.{denyRead,allowRead,allowWrite,denyWrite}` and
+`network.{allowedDomains,deniedDomains,allowLocalBinding}` — or it
+refuses to start. A starter config that mirrors the `/sandbox`
+settings above:
 
 ```json
 {
   "filesystem": {
-    "writable": ["$CWD"],
     "denyRead": [
-      "~/.aws/**",
-      "~/.ssh/**",
-      "~/.docker/config.json",
-      "~/.netrc",
-      "~/.gnupg/**",
-      "**/.env",
-      "**/.env.*"
-    ]
+      "/home/you/.aws",
+      "/home/you/.ssh",
+      "/home/you/.gnupg",
+      "/home/you/.config/gh",
+      "/home/you/.docker/config.json",
+      "/home/you/.netrc"
+    ],
+    "allowRead": [],
+    "allowWrite": ["/home/you/path/to/project"],
+    "denyWrite": []
   },
   "network": {
     "allowedDomains": [
@@ -186,19 +198,34 @@ starter config that mirrors the `/sandbox` settings above:
       "github.com",
       "raw.githubusercontent.com",
       "api.github.com"
-    ]
-  },
-  "env": {
-    "scrub": true
+    ],
+    "deniedDomains": [],
+    "allowLocalBinding": false
   }
 }
 ```
 
-`env.scrub: true` enables `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` —
-strips Anthropic and cloud-provider credentials from Bash
-subprocess environments. The exact scrub list isn't in the public
-docs as of 2026-05-25; treat it as a defense-in-depth measure, not
-a complete inventory.
+> **Linux path-matching caveat (important).** On Linux, srt's
+> `denyRead`/`allowWrite` are bubblewrap-based and match **absolute
+> paths and directory subtrees only**. Filename globs like `**/.env`,
+> `*.pem`, or `~/.aws/**` do **NOT** match (verified empirically; srt
+> documents glob syntax for macOS only). Use absolute paths. To
+> emulate an allow-list, `denyRead` a broad parent and `allowRead` the
+> specific subtrees you need — but note you cannot deny a file *inside*
+> an `allowRead` directory (srt issue #193), so a `.env` inside your
+> project worktree is **not** protectable by `denyRead`. Keep secrets
+> out of the worktree, or rely on a credential broker.
+
+> **`allowLocalBinding` must stay `false`.** Setting it `true` also
+> lifts the outbound egress allowlist entirely (srt issues #131/#225),
+> not just local binds.
+
+Environment scrubbing is **not** an srt settings key — it is the
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` environment variable, which
+strips Anthropic and cloud-provider credentials from Bash subprocess
+environments. The exact scrub list isn't in the public docs as of
+2026-05-26; treat it as a defense-in-depth measure, not a complete
+inventory.
 
 ## Run a session
 

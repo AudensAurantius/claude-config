@@ -1079,6 +1079,21 @@ in-sandbox concerns (see Alternatives).
   though the broker makes their contents non-load-bearing,
   `denyRead` on `**/.env` removes the classifier's input. Belt-and-
   suspenders pattern.
+  - *Correction (2026-05-26, ClaudeConfig-40s.15.2):* this is
+    **macOS-only as stated**. On Linux, `srt`'s `denyRead` is
+    bubblewrap-based and matches **absolute paths / directory
+    subtrees only — filename globs like `**/.env` do NOT match**
+    (verified empirically; srt documents globs for macOS only). The
+    `.env`-anywhere-in-worktree case is therefore **unsolvable via
+    `denyRead` on Linux** — and `allowRead` directories can't have
+    files denied within them (srt issue #193) — so on Linux the
+    broker is not belt-and-suspenders for `.env`, it is the **sole**
+    defense. More broadly: composed-mode read protection rests
+    PRIMARILY on the DEC-012 UID boundary (claude-session cannot read
+    hactar's `0750` home regardless of `srt`), with `srt` `denyRead`
+    as narrow absolute-path defense-in-depth for claude-session's own
+    home. The credential `denyRead` baseline is accordingly emitted as
+    absolute `${SANDBOX_HOME}`-anchored paths, not globs.
 - **Tier 3 credentials still require human execution.** The broker
   makes tier-1 and (the implementation of) tier-2 mechanically
   safe; tier-3 (production-mutation, broad-scope external auth)
@@ -1190,3 +1205,432 @@ that must persist and inform a future phase.
 - Design docs cite the bead that produced them and the DECs they
   relate to; the eventual binding DEC cites back to the design doc.
 - Per CLAUDE.md, this new documentation subdirectory is recorded here.
+
+---
+
+### DEC-016: `claude-session` owns its own Claude Code (and bun) install (2026-05-26)
+
+**Decision:** The `claude-session` principal gets its own Claude Code
+installation in its own home (`/home/claude-session/.local/share/
+claude/versions/...`, `~/.local/bin/claude`, and its own `~/.bun`),
+owned by `claude-session`. It does **not** share or borrow hactar's
+binary. The install is performed at provisioning time and is
+version-managed (see Consequences).
+
+**Context:** This falls out of the interaction of two prior decisions,
+discovered while trying to run the one-time OAuth flow (40s.3):
+
+- **DEC-011 composed mode (`srt`) does not remap paths** — the
+  sandboxed process sees the *real* filesystem, so `claude` must be on
+  `claude-session`'s *real* `PATH`, not bound in from elsewhere.
+- **DEC-012 gives hactar a `0700` home** (verified: `drwx------`).
+  `claude-session` cannot even traverse `/home/hactar`, so it cannot
+  read hactar's `~/.local/bin/claude`, `~/.local/share/claude`, or
+  `~/.bun` by any means short of loosening hactar's home permissions —
+  which would defeat the UID-separation guarantee DEC-012 exists to
+  provide.
+
+Sharing hactar's binary is therefore impossible in *both* modes
+without breaking DEC-012. A corollary, found at the same time: the
+pre-existing profile's standalone binds of hactar's `~/.local/...`
+claude paths into the sandbox were already broken under the
+`sudo -u claude-session` identity model (bwrap runs as
+`claude-session`, which can't read hactar's `0700` home) — they only
+appeared to work in the POC's same-UID / `--uid`-remap model.
+
+**Alternatives:**
+
+- *Share hactar's binary via bind-mount or `PATH`.* Rejected:
+  impossible under DEC-012's `0700` home; would require loosening
+  hactar's home permissions or punching ACL traversal holes into it,
+  defeating the isolation.
+- *System-wide install (`/usr/local`), shared by both users.*
+  Rejected (for now): Claude Code's installer is user-`$HOME`-oriented
+  (a system install is hacky, and per-`$HOME` state is still needed),
+  and a `claude-session`-owned install aligns with DEC-009 (OAuth in
+  its own home) and the principal-isolation model. Revisit only if
+  per-user duplication becomes a real cost.
+- *Bind only claude-session's own install back over the tmpfs home in
+  standalone mode.* Accepted as the standalone-mode mechanism (this is
+  the profile-binds fix), distinct from the composed-mode case where
+  no bind is involved at all.
+
+**Consequences:**
+
+- **Provisioning installs Claude Code + bun for `claude-session`** via
+  `sudo -u claude-session` + the official installer, version-pinned.
+  Wired into the install script(s). Tracked by ClaudeConfig-40s.15.6.
+- **The standalone profile's claude binds are corrected** to reference
+  `claude-session`'s own `~/.local/{bin,share}/claude` + `~/.bun`
+  (bound back over the tmpfs home), not hactar's.
+- **Version management** (`claude`/`bun`): Claude Code auto-updates by
+  default and exposes `claude update` (latest) and `claude install
+  <version>` (pin); bun exposes `bun upgrade`. The launcher can sync
+  `claude-session`'s versions to be ≥ hactar's before a session (a
+  follow-up bead); independent auto-update inside the sandbox is the
+  alternative but couples to network policy and version drift.
+- **Skill/agent/command sharing is a separate problem** with the same
+  `0700` root cause — hactar's `~/.claude/skills` is unreadable by
+  `claude-session` too. It is NOT solved by this DEC; see the
+  skill-overlay design (separate bead / Phase 2 profile work).
+- **OAuth (40s.3) is unblocked** once the install lands:
+  `claude-session` will have a `claude` to run the one-time flow.
+
+---
+
+### DEC-017: Lua/LuaJIT for system fast-path PreToolUse hooks (2026-05-27)
+
+**Decision:** System-shipped fast-path PreToolUse hooks — config-guard,
+git-guard, audit, and future hooks firing on every Bash tool call — are
+written in **Lua** and executed via **LuaJIT**. The git-guard handoff's
+Python choice is superseded.
+
+**Context:** A PreToolUse hook fires on every Bash invocation. Python's
+interpreter startup (~30–50 ms) plus `pyyaml` import (~10–20 ms) puts each
+call at ~50 ms; a 100-call session aggregates ~5 s of user-perceptible
+hook overhead. LuaJIT's startup is ~1 ms; the same session aggregates
+~0.1 s. The git-guard handoff itself flagged the millisecond budget
+("the hook must bail in milliseconds"). The user has existing Lua
+experience; in-script ergonomics with `lyaml` and `lua-cjson` are clean
+once the bindings are installed.
+
+**Alternatives:**
+
+- *Python + pickle-cached YAML.* Saves the `pyyaml` import (~10–20 ms)
+  but not Python's dominant interpreter-startup cost; not enough to
+  close the gap.
+- *Go.* Best in pure perf (~1 ms startup, single static binary, mature
+  stdlib). Rejected for fast-path hooks: user prefers Lua and Lua's perf
+  is within striking distance; Go is retained for the egress proxy +
+  swarm coordinator (DEC-018).
+- *Perl.* ~10 ms startup, mature, preinstalled. Rejected: thin
+  maintainership pool in 2026.
+- *Node.* ~50–100 ms startup, worse than Python. Rejected.
+- *C/C++/Rust.* No startup-perf gain over Go we'd capture; markedly more
+  complexity. Rejected for hooks.
+
+**Consequences:**
+
+- LuaJIT + `luarocks` + `lyaml` + `lua-cjson` must be provisioned in
+  claude-session's home (new bead; pattern follows Node/srt provisioning
+  in 40s.15.11).
+- Existing fast-path-hook beads are language-switched: 40s.18
+  (config-guard), 40s.19 (audit), 40s.21 (telemetry-hook portion), the
+  git-guard epic ClaudeConfig-bi0 + children bi0.1–bi0.9. The WIP
+  `config-guard.py` (40s.18) becomes a reference for the Lua port.
+- Project-specific hooks (DEC-020) can still be Python/Node/Bash/Perl/Lua
+  via shebang dispatch; this DEC governs only the system-shipped hooks.
+- The pickle-cache pattern proposed earlier is moot for fast-path; not
+  pursued.
+
+---
+
+### DEC-018: Go for egress proxy/broker and the future swarm coordinator (2026-05-27)
+
+**Decision:** The DEC-013 egress mediation components (SNI proxy
+`ciw.3`, credential broker `ciw.2`) and the eventual Phase 6 swarm
+coordinator (when ClaudeConfig-g91 materializes) are written in **Go**.
+Confirms and extends DEC-013's implicit choice.
+
+**Context:** The proxy needs `crypto/tls.ClientHelloInfo` for SNI
+inspection without decryption, one goroutine per accepted connection,
+and easy single-binary deployment. The broker is HTTP/JSON glue — Go's
+stdlib + concurrency fit cleanly. The Phase 6 swarm coordinator will
+manage N concurrent worker processes (lifecycle, IPC, aggregation) —
+Go's goroutines + channels are the strongest available model for that
+workload.
+
+**Alternatives:**
+
+- *Python.* `asyncio` + `cryptography` carry more complexity for the
+  SNI-preread pattern; concurrency surface (event loop) is larger than
+  goroutines.
+- *Rust.* Comparable or better perf; markedly slower compile times;
+  learning curve disproportionate for our ~300-LOC components.
+- *Lua.* TLS-internals + HTTP-server ecosystem is thinner than Go's;
+  not a natural fit for the proxy.
+
+**Consequences:**
+
+- Go toolchain becomes a host-side build dependency (compile binaries).
+- Per-user binary install for claude-session (single static binary in
+  `~/.local/bin`, same DEC-016 slot).
+- Provisioning installs the compiled binaries for claude-session when
+  the proxy/broker beads land; per-user, version-pinned.
+- The Phase 6 swarm coordinator's language is hereby decided (Go); the
+  worker-isolation design (759) remains language-agnostic about workers.
+
+---
+
+### DEC-019: Python (uv) for slower-path tools — packaged as entry points (2026-05-27)
+
+**Decision:** Slower-path Python tools (provisioning helpers, the
+srt-settings emitter if/when ported, any future Python-side broker
+logic, validation utilities) live in a **uv-managed Python project** at
+the repo root, packaged as `[project.scripts]` entry points and
+installed for claude-session via **`pipx` (or `uv tool install`)**.
+Deployed entry points get their declared dependencies from
+`pyproject.toml`; the project's dev `.venv` is for testing/linting only,
+not deployed.
+
+**Context:** Supersedes an earlier (proposed-and-rejected) "stdlib-only
+deployed scripts" stance. Packaging gives deployed tools declared
+dependencies (e.g. `pyyaml` if any Python tool needs it) without
+vendoring or constraining the language, while keeping the dev venv
+separate from runtime distribution. Matches the DEC-016 "claude-session
+owns its tools" model already used for claude (DEC-016) and Node/srt
+(40s.15.11).
+
+**Alternatives:**
+
+- *Stdlib-only deployed scripts.* Simpler runtime; rejected because the
+  pyproject scaffolding is happening anyway and stdlib-only would force
+  vendoring/awkwardness as soon as any non-stdlib library is wanted.
+- *System pip install in claude-session.* Pollutes a global Python; no
+  per-app isolation; rejected.
+- *Single shared venv.* No per-app isolation; rejected.
+
+**Consequences:**
+
+- Repo root grows a `pyproject.toml` (non-package configuration);
+  `[project]`, `[project.scripts]`, `[dependency-groups.dev]`,
+  `[tool.ruff]`, `[tool.pytest]`, `[tool.mypy]`.
+- `uv sync` produces a development `.venv` (gitignored); `uv build`
+  produces a distributable wheel.
+- Provisioning step (in `provision-claude-session.sh`) installs the
+  wheel via `pipx` (or `uv tool install`) for claude-session — per-user
+  isolated venv, idempotent + version-pinned.
+- Existing deployed shell scripts (wrapper, ACL script, etc.) are not
+  affected; this DEC covers only Python tools.
+
+---
+
+### DEC-020: Multi-interpreter support for project-specific hooks (2026-05-27)
+
+**Decision:** Project-specific hooks (under `<project>/.claude-session/
+hooks/`) are written in any of a supported interpreter set — **Python,
+Node, Bash, Perl, Lua** — and dispatched via standard `#!` shebang
+lines. The supported interpreters and their package managers are
+provisioned in claude-session's home **once at install time**, not
+per-session.
+
+**Context:** Project authors should not need a Go toolchain to write a
+project-level guard. Different projects naturally lean toward different
+languages (Python projects → Python hooks; Node projects → JS hooks).
+Shebang dispatch lets each project use the most natural language; the
+interpreter set is static enough that one-time provisioning is the
+right cadence.
+
+**Alternatives:**
+
+- *Force one language.* Friction for project authors; rejected.
+- *Per-project interpreter install on session boot.* Adds latency to
+  every session; rejected for static items (interpreters change rarely).
+
+**Consequences:**
+
+- Provisioning installs (claude-session-owned, in its `~/.local` or
+  equivalent): Python 3 + pip (via uv); Node + npm (already
+  provisioned, 40s.15.11); Lua + LuaJIT + luarocks + `lyaml` +
+  `lua-cjson` (per DEC-017's bead); Perl (system; verify availability,
+  no install needed); Bash (system).
+- New "interpreter availability" check (extends `smoke-test.sh`) — each
+  interpreter callable as claude-session in both modes.
+- Project hooks rely on the SHEBANG to choose interpreter; no
+  project-side declaration of "which interpreter" is needed beyond the
+  file's first line.
+
+---
+
+### DEC-021: Just (Justfile) as the polyglot orchestrator; retire the Makefile (2026-05-27)
+
+**Decision:** A `Justfile` at the repo root is the polyglot dev/build/
+install orchestrator (`just build`, `just test`, `just install`,
+`just check`). The existing `Makefile` is retired and its install map
+ported into Justfile recipes.
+
+**Context:** With multiple language toolchains in play (uv for Python,
+go for Go, luarocks for Lua, plus shell/system installs), one
+orchestrator that knows how to call into each is needed. `Make`'s
+mtime-based file-target dep tracking provides little benefit for our
+~50-line install map; `just`'s explicit-recipe model is clearer for
+polyglot work and matches the user's tooling preference (the python-
+scripting skill already integrates with Justfile).
+
+**Alternatives:**
+
+- *Keep both Make + Just.* Avoidable duplication, two-source-of-truth
+  problem; rejected.
+- *Bash scripts.* Adequate for one or two recipes; awkward at the scale
+  of build + test + install + check across multiple languages.
+- *Bazel.* Massive operational complexity for a personal project;
+  rejected.
+- *`redo` (DJB design).* Elegant for incremental builds across complex
+  artifact graphs; our build graph is too thin to benefit. Revisit only
+  if code-gen / many compiled artifacts arrive.
+
+**Consequences:**
+
+- The Makefile's install rules + targets become Justfile recipes (port
+  + retire). Tracked by its own bead.
+- Top-level commands: `just build`, `just install`, `just test`,
+  `just check`, `just smoke`, etc. (concrete recipe set defined when
+  the porting bead executes).
+- CLAUDE.md + the pre-commit hook reference `just check` / `just test`
+  as quality gates.
+
+---
+
+### DEC-022: Per-language native testing; orchestrated by Just (2026-05-27)
+
+**Decision:** Tests are written in each language's native framework —
+**`pytest`** (Python), **`bats`** (Bash), **`go test`** (Go, if/when
+adopted), **`busted`** (Lua) — and run uniformly via `just test`. No
+pytest-as-bash-test wrapper.
+
+**Context:** Cross-language test-framework wrappers (e.g., pytest
+invoking Bash via subprocess) sacrifice readability + native idiom for
+the illusion of "one runner." Just as orchestrator already provides
+unified invocation; each language keeps its native testing UX. This is
+the established polyglot-project pattern (kubernetes, nixpkgs, many
+devops projects).
+
+**Alternatives:**
+
+- *Pytest as universal driver (subprocess-call other languages).* Loses
+  native idiom for marginal "one runner" gain; rejected.
+- *No formal tests.* Insufficient for security-relevant components
+  (config-guard, the proxy, broker); rejected.
+
+**Consequences:**
+
+- `tests/` (Python pytest, under the uv project) — first target for
+  `config-guard` after the language switch (or its replacement; Lua's
+  version may move under `tests-lua/`).
+- `tests/bats/` (or `tests-bats/`) — bats tests for the wrapper,
+  emitter, ACL script, smoke-test logic.
+- `tests-lua/` — busted tests for Lua hooks when they land.
+- `just test` runs all of them; CI / pre-commit calls `just test`.
+- Static linters (ruff, shellcheck, gofmt/staticcheck if Go) wired into
+  `just check` for early fail.
+
+---
+
+### DEC-023: Per-project session sidecar — multi-modal, priority P2 (2026-05-27)
+
+**Decision:** Per-project Claude-session sidecar config lives at
+`<project>/.claude-session/sidecar.yaml` and declares the tooling a
+sandboxed session needs to do real project work: declarative dep lists,
+env vars, **egress-allowlist additions** (feeds DEC-013), and an
+optional script-mode escape-hatch + **Nix-mode** for projects wanting
+bit-reproducible session environments. Priority **P2** (not deferred);
+**design now, implementation when the dependency chain allows**.
+
+**Context:** Sandboxed sessions need access to project tooling (e.g. a
+project venv) to do real work. The host user's venv must not be
+bind-mounted (security: installed packages may carry secrets / `.pth`
+hooks; identity-coupled). The right shape is a **claude-session-owned
+per-project venv**, populated from the project's declared deps via the
+sidecar — never the user's venv. Three setup modes cover the realistic
+project space: declarative (simple Python projects), script (imperative
+setup), Nix (bit-reproducible).
+
+**Alternatives:**
+
+- *Bind-mount the user's venv.* Security leak; rejected.
+- *Force every project to install all tooling globally for claude-session.*
+  Wastes space; mixes project deps; rejected.
+- *Single mode (declarative).* Insufficient for projects with genuinely
+  imperative setup or those wanting Nix's reproducibility guarantee.
+
+**Consequences:**
+
+- New epic (sidecar). Children: schema design (Cue, DEC-024), coordinator
+  integration, declarative-mode impl, script-mode impl, Nix-mode impl
+  (incl. Nix install for claude-session when any project uses Nix-mode).
+- `~/.cache/claude-session/projects/<project-hash>/venv/` is the
+  canonical per-project venv location.
+- Sidecar's egress-allowlist additions feed DEC-013 per-project (e.g. a
+  project declaring `pypi.org` for pip-install gets it in its
+  allowlist; others don't).
+- Design happens now (DEC + schema); implementation lands when the
+  immediate Phase 1 chain settles.
+
+---
+
+### DEC-024: Cue as schema/validation layer; YAML as runtime config format (2026-05-27)
+
+**Decision:** **Cue** is the schema + validation language for
+declarative configs whose constraint shape exceeds plain YAML (initially:
+the sidecar config from DEC-023; later: the Phase 2 profile schema,
+ClaudeConfig-a92.1). **Runtime config files remain in YAML**; Cue is
+used at session boot (or via `just check`) via `cue vet` to validate the
+YAML against the Cue schema.
+
+**Context:** Cue is lattice-based, expressing constraints (`x: >=18`,
+`allowed_egress ⊆ system_allowlist`), defaults, and types in one
+declaration; it captures dependency networks and cross-config
+consistency rules that plain YAML cannot. Forcing every hook interpreter
+(Python, Lua, Bash) to grok Cue would be costly. Splitting roles — Cue
+for schema/validation, YAML for runtime — gets the validation power
+without the runtime cost.
+
+**Alternatives:**
+
+- *YAML only (no schema).* Loses validation; rejected for sidecar.
+- *JSON Schema.* Verbose; less expressive for cross-field constraints.
+- *Cue at runtime (hooks parse Cue directly).* Heavy runtime dep across
+  multiple interpreters; rejected.
+- *Pydantic / Zod / similar.* Tied to one language; rejected
+  (polyglot).
+
+**Consequences:**
+
+- A `cue` binary is provisioned (host + claude-session) when the sidecar
+  feature lands (or earlier if a different schema requires it).
+- Schema files (`schemas/sidecar.cue`, future `schemas/profile.cue`)
+  live in the repo.
+- `just check` (or the session-boot coordinator) runs `cue vet` against
+  YAML configs.
+- Hooks (in Lua/Python/etc.) still read YAML at runtime; no behavior
+  change to the hot path.
+
+---
+
+### DEC-025: Firecracker deferred to Phase 6; Kubernetes/containers rejected for swarms (2026-05-27)
+
+**Decision:** Firecracker microVM isolation is **deferred** to a Phase 6
+revisit when swarm-coordinator design begins; the default Phase 6
+worker-isolation mechanism remains **subuid user-namespaces** (per
+`docs/design/phase6-worker-isolation.md` / ClaudeConfig-759).
+Container-based orchestration (Kubernetes) is **explicitly rejected**
+for swarms.
+
+**Context:** Firecracker offers HW-virt isolation (~125 ms boot, ~5 MiB
+per VM) but adds KVM dependency — problematic on WSL2 due to a
+documented nested-virt bug (see `~/.local/src/wsl-vpn-namespace/docs/
+PITFALLS.md`) — and operational complexity (VM image management,
+guest kernels) that we don't recoup until the swarm needs to host
+genuinely adversarial code beyond what subuid + DEC-013 egress already
+bounds. Kubernetes shares the host kernel just like bwrap + subuid
+does — its container isolation buys nothing over subuid for
+worker-from-worker isolation, while adding substantial operational scale
+(control plane, scheduler, kubelet) that is overkill for a personal
+swarm on a single machine.
+
+**Alternatives:**
+
+- *Scaffold Firecracker now.* Premature: Phase 6 design isn't started,
+  scaffolding without workload patterns is guessing; rejected.
+- *Adopt Kubernetes for swarm management.* Wrong isolation model + wrong
+  operational scale; rejected.
+- *Stay on subuid+bwrap (the 759 default).* Adopted.
+
+**Consequences:**
+
+- No new Phase-1 work for Firecracker / containers.
+- Phase 6 swarm-coordinator design will revisit Firecracker if a
+  concrete adversarial-workload requirement emerges; until then,
+  subuid+bwrap is the model.
+- The Firecracker comparison stays in
+  `docs/design/phase6-worker-isolation.md` as a deferred alternative.

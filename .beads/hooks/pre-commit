@@ -22,3 +22,22 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.2 ---
+
+# --- BEGIN USER pre-commit framework hook (ClaudeConfig-2s3.4) ---
+# Delegates to the pre-commit (Python framework) config at
+# .pre-commit-config.yaml — runs cheap formatting checks (trailing
+# whitespace, EOF, YAML/TOML/merge-conflict) plus the polyglot
+# `just check` quality gate (DEC-021, DEC-022). The framework's own
+# `pre-commit install` can't run because core.hooksPath points here
+# (bd integration); calling pre-commit directly from this script
+# achieves the same effect without colliding.
+#
+# Requires `uv sync` to have populated .venv; warns and continues
+# otherwise so a fresh clone isn't blocked from committing before
+# tooling is installed.
+if [ -f .pre-commit-config.yaml ] && command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
+    uv run pre-commit run --hook-stage pre-commit || exit 1
+elif [ -f .pre-commit-config.yaml ]; then
+    echo >&2 "pre-commit: .venv not yet synced — run 'just sync' to enable framework hooks"
+fi
+# --- END USER pre-commit framework hook ---

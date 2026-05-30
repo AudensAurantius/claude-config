@@ -16,7 +16,39 @@
       "Bash(bash -n *)",
       "Bash(mkdir -p sandbox/*)",
       "Bash(mkdir -p .tasks/*)",
-      "Bash(chmod +x sandbox/*)"
+      "Bash(chmod +x sandbox/*)",
+
+      "Bash(sudo -u claude-session *)",
+      "Bash(sudo -u claude-session -H *)",
+
+      "Bash(uv:*)",
+      "Bash(uvx:*)",
+      "Bash(pipx:*)",
+      "Bash(just:*)",
+      "Bash(bats:*)",
+      "Bash(lua:*)",
+      "Bash(luajit:*)",
+      "Bash(luarocks:*)",
+
+      "Bash(tar:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(sha256sum:*)",
+      "Bash(chmod:*)",
+      "Bash(ln:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+
+      "Bash(dpkg -l:*)",
+      "Bash(apt list:*)",
+      "Bash(apt-cache:*)",
+
+      "Bash(bd:*)",
+      "Bash(bd-timew:*)",
+
+      "Write(//home/hactar/Source/claude-config/**)",
+      "Edit(//home/hactar/Source/claude-config/**)",
+      "Read(//home/hactar/Source/claude-config/**)"
     ]
   },
   "hooks": {
