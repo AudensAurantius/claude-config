@@ -135,15 +135,44 @@ assemble_claude_dir() {
     rm -rf "$stage"
     # claude-session-scoped Claude Code permission deny rules (40s.16 re-home):
     # app-layer matcher where **/.env etc. DO work; scoped to claude-session so
-    # the host user's interactive sessions are unaffected. Merged, idempotent.
+    # the host user's interactive sessions are unaffected. Plus the system-
+    # shipped fast-path PreToolUse hook config-guard.lua (ClaudeConfig-40s.18,
+    # DEC-017). Merged in one jq pass; idempotent across re-runs.
+    local hook_lua hookcmd
+    hook_lua="$(resolve_hook_script config-guard.lua)" || hook_lua=""
+    if [ -z "$hook_lua" ]; then
+        echo "claude-sandbox: warning — config-guard.lua not found; skipping PreToolUse wiring" >&2
+        hookcmd=""
+    else
+        hookcmd="lua ${hook_lua}"
+    fi
     sudo -u "$SANDBOX_USER" -H bash -c '
         f="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude"
-        if [ -f "$f" ]; then
-            t=$(mktemp); jq --argjson d "$1" ".permissions = (.permissions // {}) + {deny: \$d}" "$f" > "$t" && mv "$t" "$f"
+        if [ ! -f "$f" ]; then printf "{}\n" > "$f"; fi
+        if [ -n "$2" ]; then
+            t=$(mktemp); jq --argjson d "$1" --arg hc "$2" "
+                .permissions = (.permissions // {}) + {deny: \$d} |
+                .hooks = (.hooks // {}) + {
+                    PreToolUse: [{
+                        matcher: \"Write|Edit|MultiEdit|NotebookEdit\",
+                        hooks: [{type: \"command\", command: \$hc}]
+                    }]
+                }" "$f" > "$t" && mv "$t" "$f"
         else
-            jq -n --argjson d "$1" "{permissions: {deny: \$d}}" > "$f"
-        fi' _ "$CLAUDE_DENY_RULES_JSON" \
-        || echo "claude-sandbox: warning — failed to set deny rules for $SANDBOX_USER" >&2
+            t=$(mktemp); jq --argjson d "$1" ".permissions = (.permissions // {}) + {deny: \$d}" "$f" > "$t" && mv "$t" "$f"
+        fi' _ "$CLAUDE_DENY_RULES_JSON" "$hookcmd" \
+        || echo "claude-sandbox: warning — failed to set settings.json for $SANDBOX_USER" >&2
+}
+
+# Resolve a system-shipped hook script (installed layout or repo layout).
+# Returns the absolute path on stdout; exit 1 if not found.
+resolve_hook_script() {
+    local name="$1" c
+    for c in "$SELF_DIR/../share/claude-sandbox/hooks/$name" \
+             "$SELF_DIR/../../claude/scripts/hooks/$name"; do
+        [ -f "$c" ] && { readlink -f "$c"; return 0; }
+    done
+    return 1
 }
 
 sync_claude_session_version() {

@@ -1,3 +1,15 @@
+lua-hooks:
+- ClaudeConfig-40s.18
+- ClaudeConfig-40s.19
+- ClaudeConfig-bi0.1
+- ClaudeConfig-bi0.2
+- ClaudeConfig-bi0.3
+- ClaudeConfig-bi0.8
+- ClaudeConfig-bi0.4
+- ClaudeConfig-bi0.5
+- ClaudeConfig-bi0.6
+- ClaudeConfig-bi0.7
+- ClaudeConfig-bi0.9
 research:
 - J121-1aj
 - J121-2ou

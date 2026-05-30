@@ -22,6 +22,7 @@ sandbox/bin/claude-sandbox|${BIN_DIR}/claude-sandbox|755
 sandbox/bin/claude-sandbox-emit-srt-settings|${BIN_DIR}/claude-sandbox-emit-srt-settings|755
 sandbox/profiles/default.yaml|${PROFILE_DIR}/default.yaml|644
 claude/settings/managed-settings.json|${ETC_DIR}/managed-settings.json|644
+claude/scripts/hooks/config-guard.lua|${SHARE_DIR}/hooks/config-guard.lua|755
 sandbox/scripts/setup-claude-session-acls.sh|${SHARE_DIR}/scripts/setup-claude-session-acls.sh|755
 sandbox/scripts/provision-claude-session.sh|${SHARE_DIR}/scripts/provision-claude-session.sh|755
 EOF

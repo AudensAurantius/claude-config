@@ -70,9 +70,8 @@ shellcheck:
 # ── Tests (DEC-022: per-language native frameworks, orchestrated here) ──
 
 # Run all native-framework tests: pytest (Python, tests/) +
-# bats (Bash, tests-bats/). Args pass through to pytest only — bats
-# discovers everything under tests-bats/ unconditionally. Lua/busted
-# tests join when the first Lua hook lands (see tests-lua/README).
+# bats (Bash, tests-bats/) + busted (Lua, tests-lua/). Args pass
+# through to pytest only. Each runner discovers its own dir.
 test *args:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -81,7 +80,10 @@ test *args:
     echo
     echo "── bats ──"
     bats tests-bats/; bats_rc=$?
-    if [ "$py_rc" -ne 0 ] || [ "$bats_rc" -ne 0 ]; then
+    echo
+    echo "── busted ──"
+    busted tests-lua/; bu_rc=$?
+    if [ "$py_rc" -ne 0 ] || [ "$bats_rc" -ne 0 ] || [ "$bu_rc" -ne 0 ]; then
         exit 1
     fi
 
