@@ -1,0 +1,81 @@
+[project]
+name = "claude-config"
+version = "0.0.0"
+description = "Claude tooling and sandbox for this machine — skills, agents, slash commands, settings, sandbox infrastructure, and supporting Python utilities."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Michael Haynes" },
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = []
+
+# [project.scripts] — populated as Python tools land (DEC-019). Example shape:
+#   claude-config-emitter = "claude_config.tools.emitter:main"
+
+[build-system]
+requires = ["uv_build>=0.7,<0.8"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "mypy>=1.10",
+]
+
+# ── Tooling configuration (DEC-022: per-language native testing) ──
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+# WIP file slated for Lua port per DEC-017 / ClaudeConfig-40s.18; excluded
+# rather than tidied so the Lua replacement can land cleanly.
+extend-exclude = ["sandbox/scripts/hooks/config-guard.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "ANN",  # flake8-annotations (public APIs)
+    "D",    # pydocstyle
+]
+ignore = [
+    "D100",  # missing docstring in public module (enforced selectively)
+    "D104",  # missing docstring in public package
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "D"]  # relax annotations and docstrings in tests
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+# tests/ added by ClaudeConfig-2s3.3 (bats + pytest layout); include then,
+# with a tests.* override (relaxed annotations) added at that time.
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

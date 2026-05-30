@@ -9,3 +9,14 @@
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Python (DEC-019: uv-managed project)
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
