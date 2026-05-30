@@ -91,8 +91,18 @@ smoke:
 
 # ── Composite quality gate ──
 
-# Run all language quality gates (ruff + mypy + ruff-format + shellcheck + pytest)
+# Run all language quality gates (ruff + mypy + ruff-format + shellcheck + pytest + bats)
 check: lint fmt-check shellcheck test
+
+# ── Pre-commit hooks (ClaudeConfig-2s3.4) ──
+#
+# This project uses beads' core.hooksPath integration (.beads/hooks/);
+# bd's pre-commit script delegates to the pre-commit framework via a
+# user-stanza appended to it. No `pre-commit install` step is needed.
+
+# Run all pre-commit hooks against every tracked file (not just the staged subset)
+pre-commit-run:
+    uv run pre-commit run --all-files
 
 # ── Install map (ported from Makefile per DEC-021) ──
 #

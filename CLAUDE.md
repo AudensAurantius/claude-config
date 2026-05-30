@@ -143,8 +143,17 @@ Inside a sandboxed session, `claude-session` sees:
 
 ## Coding Conventions
 
-- **Style:** shell scripts pass `shellcheck`; Python (where used) ruff
-  + mypy strict; YAML lints via yamllint.
+- **Style:** Python ruff + mypy strict (DEC-019, DEC-022); shell
+  scripts pass `shellcheck`; YAML lints via the pre-commit
+  `check-yaml` hook. All gated through `just check` (single composite
+  recipe; see "Build & Run").
+- **Quality gates:** `just check` runs ruff + mypy + ruff-format-check
+  + shellcheck + pytest + bats. Same gate fires automatically via
+  pre-commit (configured in `.pre-commit-config.yaml`; bd's
+  `.beads/hooks/pre-commit` stacks the framework on top of bd's own
+  pre-commit logic — no separate `pre-commit install` step needed).
+  Bootstrap: `just sync && just pre-commit-run` to confirm the gate
+  is green before committing.
 - **Commits:** Conventional Commits
   (`feat/fix/docs/refactor/test/chore`), with `Co-Authored-By` trailer
   when the change was AI-assisted.

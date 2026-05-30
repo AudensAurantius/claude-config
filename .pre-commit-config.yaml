@@ -1,0 +1,51 @@
+# .pre-commit-config.yaml — pre-commit hook configuration for
+# claude-config (DEC-021, DEC-022, ClaudeConfig-2s3.4).
+#
+# Layered hooks:
+#   1. Cheap formatting checks (trailing whitespace, EOF, YAML/TOML
+#      syntax, merge-conflict markers) on every commit, fast feedback.
+#   2. A single `just check` local hook running the full polyglot
+#      quality gate (ruff + mypy + ruff-format-check + shellcheck +
+#      pytest + bats). One hook so the gate stays in sync with
+#      whatever `just check` does — adding a tool only changes the
+#      Justfile, not this config.
+#
+# Bootstrap (one-time per clone):
+#   uv sync
+#   # No `pre-commit install` needed: bd's .beads/hooks/pre-commit
+#   # already delegates here via a user stanza (core.hooksPath is
+#   # already set to .beads/hooks/). See that file for details.
+#
+# Run on all files:
+#   just pre-commit-run
+#   (equivalent: uv run pre-commit run --all-files)
+#
+# Convention commits are still enforced manually via the CLAUDE.md
+# "Session Discipline" guidance, not via commitizen — the team-wide
+# pattern (Co-Authored-By trailer for AI-assisted commits, etc.) is
+# easier to follow by reading recent git log than to validate
+# automatically.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.bats$'  # bats heredoc bodies sometimes need trailing space
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+
+  # Single gate: anything `just check` covers is enforced here too.
+  # Adding a tool to the gate is a Justfile edit, not a pre-commit
+  # config edit.
+  - repo: local
+    hooks:
+      - id: just-check
+        name: just check (ruff + mypy + ruff-format-check + shellcheck + pytest + bats)
+        entry: just check
+        language: system
+        pass_filenames: false  # project-wide gate, not per-file
