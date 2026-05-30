@@ -22,15 +22,13 @@ describe("config-guard", function()
         os.execute("export HOME=/home/test")  -- noop in subshell; need a different mechanism
     end)
 
-    -- Helper: load the module fresh with a chosen HOME so PROTECTED
-    -- tables are computed against that home each time. We reload via
-    -- dofile (not require, which caches).
+    -- Helper: load the module fresh with a chosen HOME. config-guard
+    -- now requires _lib, which captures HOME at first load — clear
+    -- the package.loaded["_lib"] cache so each call gets a fresh
+    -- _lib with the shadowed HOME. Without this, only the first
+    -- load_with_home() actually takes effect.
     local function load_with_home(home)
-        local prev = os.getenv("HOME")
-        -- Lua has no portable setenv; use posix.setenv via lua-posix
-        -- if available, otherwise relaunch via env. The simplest path
-        -- that works under bare Debian's lua-5.1 + lua-cjson: shadow
-        -- os.getenv inside the chunk.
+        package.loaded["_lib"] = nil
         local real_getenv = os.getenv
         os.getenv = function(name)
             if name == "HOME" then return home end

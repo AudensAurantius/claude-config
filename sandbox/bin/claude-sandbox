@@ -86,6 +86,17 @@ SRT_SETTINGS_OVERRIDE="${CLAUDE_SANDBOX_SRT_SETTINGS:-}"
 SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 EMITTER="$SELF_DIR/claude-sandbox-emit-srt-settings"
 
+# Hook-script directory (installed layout / repo layout). Drives
+# LUA_PATH so require("_lib") from each hook script resolves the
+# shared library.
+if [ -d "$SELF_DIR/../share/claude-sandbox/hooks" ]; then
+    SHARE_HOOK_DIR="$(readlink -f "$SELF_DIR/../share/claude-sandbox/hooks")"
+elif [ -d "$SELF_DIR/../../claude/scripts/hooks" ]; then
+    SHARE_HOOK_DIR="$(readlink -f "$SELF_DIR/../../claude/scripts/hooks")"
+else
+    SHARE_HOOK_DIR=""
+fi
+
 # Per-project ACL granter (ClaudeConfig-40s.15.9). Resolve across the
 # installed layout ($PREFIX/share/claude-sandbox/scripts) and the repo layout
 # (sandbox/scripts); CLAUDE_SANDBOX_ACL_SCRIPT overrides.
@@ -124,8 +135,16 @@ assemble_claude_dir() {
     for d in skills agents commands scripts; do
         [ -d "$USER_HOME/.claude/$d" ] && cp -r "$USER_HOME/.claude/$d" "$stage/$d"
     done
+    # System-shipped Lua hooks: mirror the install-side share/hooks
+    # dir into ~/.claude/hooks/ so the bwrap standalone profile sees
+    # them via the standard sandbox_home bind (and so the same path
+    # works in composed mode without a separate srt allow-list entry).
+    # SHARE_HOOK_DIR is resolved at wrapper start from SELF_DIR.
+    if [ -n "${SHARE_HOOK_DIR:-}" ] && [ -d "$SHARE_HOOK_DIR" ]; then
+        cp -r "$SHARE_HOOK_DIR" "$stage/hooks"
+    fi
     chmod -R a+rX "$stage" 2>/dev/null || true
-    for d in skills agents commands scripts; do
+    for d in skills agents commands scripts hooks; do
         if [ -d "$stage/$d" ]; then
             sudo -u "$SANDBOX_USER" -H bash -c \
                 'mkdir -p "$HOME/.claude" && rsync -a --delete "$1/" "$HOME/.claude/$2/"' _ "$stage/$d" "$d" \
@@ -133,44 +152,44 @@ assemble_claude_dir() {
         fi
     done
     rm -rf "$stage"
+    # Pre-create the audit cache dir so the standalone profile's
+    # ~/.cache/claude-config rw bind doesn't fail on a missing source.
+    # audit-event.lua creates per-session subdirs inside this on demand.
+    sudo -u "$SANDBOX_USER" -H bash -c 'mkdir -p "$HOME/.cache/claude-config"' \
+        || echo "claude-sandbox: warning — failed to pre-create audit cache dir for $SANDBOX_USER" >&2
     # claude-session-scoped Claude Code permission deny rules (40s.16 re-home):
     # app-layer matcher where **/.env etc. DO work; scoped to claude-session so
-    # the host user's interactive sessions are unaffected. Plus the system-
-    # shipped fast-path PreToolUse hook config-guard.lua (ClaudeConfig-40s.18,
-    # DEC-017). Merged in one jq pass; idempotent across re-runs.
-    local hook_lua hookcmd
-    hook_lua="$(resolve_hook_script config-guard.lua)" || hook_lua=""
-    if [ -z "$hook_lua" ]; then
-        echo "claude-sandbox: warning — config-guard.lua not found; skipping PreToolUse wiring" >&2
-        hookcmd=""
-    else
-        hookcmd="lua ${hook_lua}"
+    # the host user's interactive sessions are unaffected. PLUS the canonical
+    # .hooks block (ClaudeConfig-40s.18 + 40s.19; DEC-017) sourced from
+    # _hooks-manifest.sh — adding a new hook is a manifest edit, not a
+    # wrapper-jq edit. Merged in one jq pass; idempotent across re-runs.
+    local hooks_manifest hooks_json
+    hooks_manifest="$(resolve_hooks_manifest)" || hooks_manifest=""
+    if [ -n "$hooks_manifest" ]; then
+        hooks_json="$(SANDBOX_HOME="$SANDBOX_HOME" "$hooks_manifest")" || hooks_json=""
+    fi
+    if [ -z "$hooks_json" ]; then
+        echo "claude-sandbox: warning — hooks manifest unavailable; skipping hooks wiring" >&2
     fi
     sudo -u "$SANDBOX_USER" -H bash -c '
         f="$HOME/.claude/settings.json"; mkdir -p "$HOME/.claude"
         if [ ! -f "$f" ]; then printf "{}\n" > "$f"; fi
         if [ -n "$2" ]; then
-            t=$(mktemp); jq --argjson d "$1" --arg hc "$2" "
+            t=$(mktemp); jq --argjson d "$1" --argjson h "$2" "
                 .permissions = (.permissions // {}) + {deny: \$d} |
-                .hooks = (.hooks // {}) + {
-                    PreToolUse: [{
-                        matcher: \"Write|Edit|MultiEdit|NotebookEdit\",
-                        hooks: [{type: \"command\", command: \$hc}]
-                    }]
-                }" "$f" > "$t" && mv "$t" "$f"
+                .hooks = \$h" "$f" > "$t" && mv "$t" "$f"
         else
             t=$(mktemp); jq --argjson d "$1" ".permissions = (.permissions // {}) + {deny: \$d}" "$f" > "$t" && mv "$t" "$f"
-        fi' _ "$CLAUDE_DENY_RULES_JSON" "$hookcmd" \
+        fi' _ "$CLAUDE_DENY_RULES_JSON" "$hooks_json" \
         || echo "claude-sandbox: warning — failed to set settings.json for $SANDBOX_USER" >&2
 }
 
-# Resolve a system-shipped hook script (installed layout or repo layout).
-# Returns the absolute path on stdout; exit 1 if not found.
-resolve_hook_script() {
-    local name="$1" c
-    for c in "$SELF_DIR/../share/claude-sandbox/hooks/$name" \
-             "$SELF_DIR/../../claude/scripts/hooks/$name"; do
-        [ -f "$c" ] && { readlink -f "$c"; return 0; }
+# Resolve _hooks-manifest.sh across installed vs repo layouts.
+resolve_hooks_manifest() {
+    local c
+    for c in "$SELF_DIR/../share/claude-sandbox/scripts/_hooks-manifest.sh" \
+             "$SELF_DIR/../scripts/_hooks-manifest.sh"; do
+        [ -x "$c" ] && { readlink -f "$c"; return 0; }
     done
     return 1
 }
@@ -329,6 +348,13 @@ build_scrubbed_env() {
         # claude-session's own bin dirs first so composed/oauth (which run its
         # claude directly via this env, no bwrap re-setenv) resolve it.
         "PATH=${SANDBOX_HOME}/.local/bin:${SANDBOX_HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        # LUA_PATH so the Lua hooks (ClaudeConfig-40s.18, 40s.19, +)
+        # can require("_lib") from the shared utility module. The
+        # path resolves inside the sandbox: claude-session's HOME has
+        # ~/.claude/hooks/ assembled by assemble_claude_dir, and
+        # standalone-mode bwrap binds it ro via sandbox_home. `;;`
+        # appends Lua's built-in default search.
+        "LUA_PATH=${SANDBOX_HOME}/.claude/hooks/?.lua;;"
         "TERM=${INHERIT_TERM}"
         "LANG=${INHERIT_LANG}"
     )

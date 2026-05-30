@@ -105,6 +105,14 @@ sandbox_home:
   - { source: "${SANDBOX_HOME}/.claude/agents",            target: "${SANDBOX_HOME}/.claude/agents",                mode: ro }
   - { source: "${SANDBOX_HOME}/.claude/commands",          target: "${SANDBOX_HOME}/.claude/commands",              mode: ro }
   - { source: "${SANDBOX_HOME}/.claude/scripts",           target: "${SANDBOX_HOME}/.claude/scripts",               mode: ro }
+  # Lua hooks (config-guard, audit-event, future git-guard family).
+  # Mirrored from the install share/hooks dir by assemble_claude_dir
+  # (40s.18 + 40s.19; DEC-017). Bound here so standalone bwrap sees
+  # them; composed mode reads them directly through srt's namespace.
+  - { source: "${SANDBOX_HOME}/.claude/hooks",             target: "${SANDBOX_HOME}/.claude/hooks",                 mode: ro }
+  # Per-session audit JSONL (40s.19). claude-session-owned; bound rw
+  # so audit-event.lua can append.
+  - { source: "${SANDBOX_HOME}/.cache/claude-config",      target: "${SANDBOX_HOME}/.cache/claude-config",          mode: rw }
 
 # Worktree policy. Phase 1 uses the canonical project path directly.
 # Phase 3 changes this to "auto-create" (per-session worktree on a
@@ -128,6 +136,12 @@ environment:
     - { var: HOME, value: "${SANDBOX_HOME}" }
     - { var: USER, value: claude-session }
     - { var: PATH, value: "${SANDBOX_HOME}/.bun/bin:${SANDBOX_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" }
+    # LUA_PATH so the hook scripts (40s.18 config-guard, 40s.19
+    # audit-event, future git-guard family) can require("_lib") from
+    # the shared module assembled into ~/.claude/hooks/. The `;;`
+    # appends Lua's compiled-in defaults so system libs (lyaml,
+    # cjson) keep loading from /usr/share/lua/5.1/.
+    - { var: LUA_PATH, value: "${SANDBOX_HOME}/.claude/hooks/?.lua;;" }
     - { var: TERM, value: "${INHERIT_TERM}" }
     - { var: LANG, value: "${INHERIT_LANG}" }
 

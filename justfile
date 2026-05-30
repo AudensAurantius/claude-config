@@ -82,7 +82,11 @@ test *args:
     bats tests-bats/; bats_rc=$?
     echo
     echo "── busted ──"
-    busted tests-lua/; bu_rc=$?
+    # Lua hooks require("_lib") relative to claude/scripts/hooks/.
+    # Production wrapper sets LUA_PATH via the env-scrub line; tests
+    # mirror it via --lpath so dofile-loaded hooks can resolve the
+    # shared library.
+    busted --lpath='./claude/scripts/hooks/?.lua' tests-lua/; bu_rc=$?
     if [ "$py_rc" -ne 0 ] || [ "$bats_rc" -ne 0 ] || [ "$bu_rc" -ne 0 ]; then
         exit 1
     fi
