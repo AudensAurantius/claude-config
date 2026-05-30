@@ -72,9 +72,13 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
-# tests/ added by ClaudeConfig-2s3.3 (bats + pytest layout); include then,
-# with a tests.* override (relaxed annotations) added at that time.
-files = ["src"]
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

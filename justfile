@@ -69,18 +69,21 @@ shellcheck:
 
 # ── Tests (DEC-022: per-language native frameworks, orchestrated here) ──
 
-# Run pytest (passes args through). Exit 5 = "no tests collected" is
-# tolerated until the bats + pytest layout lands (ClaudeConfig-2s3.3);
-# the wrapper drops once there's at least one real test.
+# Run all native-framework tests: pytest (Python, tests/) +
+# bats (Bash, tests-bats/). Args pass through to pytest only — bats
+# discovers everything under tests-bats/ unconditionally. Lua/busted
+# tests join when the first Lua hook lands (see tests-lua/README).
 test *args:
     #!/usr/bin/env bash
     set -uo pipefail
-    uv run pytest {{args}}; rc=$?
-    if [ "$rc" -eq 5 ]; then
-        echo "(pytest: no tests collected yet — tolerated until 2s3.3)"
-        exit 0
+    echo "── pytest ──"
+    uv run pytest {{args}}; py_rc=$?
+    echo
+    echo "── bats ──"
+    bats tests-bats/; bats_rc=$?
+    if [ "$py_rc" -ne 0 ] || [ "$bats_rc" -ne 0 ]; then
+        exit 1
     fi
-    exit "$rc"
 
 # Run the Phase 1 wrapper smoke test (composed + standalone modes)
 smoke:
