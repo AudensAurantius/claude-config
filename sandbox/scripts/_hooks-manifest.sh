@@ -30,6 +30,12 @@ cat <<EOF
             ]
         },
         {
+            "matcher": "Bash",
+            "hooks": [
+                {"type": "command", "command": "lua ${SANDBOX_HOME}/.claude/hooks/git-guard.lua"}
+            ]
+        },
+        {
             "matcher": ".*",
             "hooks": [
                 {"type": "command", "command": "lua ${SANDBOX_HOME}/.claude/hooks/audit-event.lua --event=PreToolUse"}

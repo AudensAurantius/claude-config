@@ -25,6 +25,8 @@ claude/settings/managed-settings.json|${ETC_DIR}/managed-settings.json|644
 claude/scripts/hooks/_lib.lua|${SHARE_DIR}/hooks/_lib.lua|644
 claude/scripts/hooks/config-guard.lua|${SHARE_DIR}/hooks/config-guard.lua|755
 claude/scripts/hooks/audit-event.lua|${SHARE_DIR}/hooks/audit-event.lua|755
+claude/scripts/hooks/git-guard.lua|${SHARE_DIR}/hooks/git-guard.lua|755
+claude/scripts/hooks/git-guard.yaml|${SHARE_DIR}/hooks/git-guard.yaml|644
 sandbox/scripts/_hooks-manifest.sh|${SHARE_DIR}/scripts/_hooks-manifest.sh|755
 sandbox/scripts/setup-claude-session-acls.sh|${SHARE_DIR}/scripts/setup-claude-session-acls.sh|755
 sandbox/scripts/provision-claude-session.sh|${SHARE_DIR}/scripts/provision-claude-session.sh|755

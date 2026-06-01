@@ -1,0 +1,71 @@
+# git-guard.yaml — global config for the git-guard PreToolUse hook
+# (ClaudeConfig-bi0.1; DEC-017). Lives at ~/.claude/hooks/git-guard.yaml
+# in claude-session's home (mirrored from the install share-dir by the
+# wrapper's assemble_claude_dir at session boot).
+#
+# This is the GLOBAL config. A per-project config at
+# <project>/.claude-session/hooks/git-guard.yaml may override or extend
+# these defaults (ClaudeConfig-bi0.6 / bi0.7).
+#
+# Patterns are globs by default. An entry prefixed with `re:` is treated
+# as a Lua regex (handoff §4).
+#
+# Schema (full set; this file populates only the foundation pieces — C2
+# through C7 add the rest):
+#
+#   protected_branches:        list of branch names/patterns that require
+#                              permission to write to (push, merge, reset,
+#                              commit on, etc.). The DEFAULT list below
+#                              covers the most common canonical branches;
+#                              per_repo overrides take precedence.
+#
+#   per_repo:                  per-repo overrides. First-match-wins on
+#                              absolute worktree path (decision 2 in the
+#                              handoff). Each entry replaces the default
+#                              `protected_branches` list for matching
+#                              repos.
+#                                - match: <absolute path>
+#                                  protected_branches: [<branch>, …]
+#
+#   ask_branch_patterns:       additional branch patterns that always
+#                              trigger an ask on writes, regardless of
+#                              protected_branches status (e.g. release/*).
+#                              Optional.
+#
+#   branch_naming:             new-branch naming convention enforced on
+#                              `git checkout -b` / `switch -c` / `branch
+#                              <new>`. C4 implements; the structure is:
+#                                patterns: [<glob>, …]
+#                                on_violation: ask | deny   (default: ask)
+#
+#   options:                   behavior toggles.
+#                                fallback_on_unparseable: allow | ask | deny
+#                                  Decision when the command parser can't
+#                                  classify (unbalanced quotes, etc.).
+#                                  Default: ask. Never set to "allow" —
+#                                  the hook gates dangerous ops.
+#                                git_dash_c_policy: ask | allow
+#                                  Stance on `git -C <dir>` and bare-repo-
+#                                  class invocations. C5/C6 implement;
+#                                  default: ask.
+#
+# C1 (this bead) sets up the loader and the safe-verb fast-allow; only
+# the `options` block is wired through to runtime today. The rest is
+# documented + populated as defaults so C2 onward can switch decisions
+# on them without re-touching this file's structure.
+
+protected_branches:
+  - main
+  - master
+
+per_repo: []
+
+ask_branch_patterns: []
+
+branch_naming:
+  patterns: []
+  on_violation: ask
+
+options:
+  fallback_on_unparseable: ask
+  git_dash_c_policy: ask

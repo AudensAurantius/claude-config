@@ -201,7 +201,7 @@ path via srt's namespace; one location, both modes.
 |---|---|---|---|
 | `config-guard.lua` | PreToolUse | `Write\|Edit\|MultiEdit\|NotebookEdit` | ClaudeConfig-40s.18 |
 | `audit-event.lua` | PreToolUse + PostToolUse (one script, `--event=` selects) | `.*` | ClaudeConfig-40s.19 |
-| *(planned)* `git-guard.lua` | PreToolUse | (regex on Bash with git verbs) | ClaudeConfig-bi0.* family |
+| `git-guard.lua` | PreToolUse | `Bash` (script fast-bails when no `git` token in the command) | ClaudeConfig-bi0.1 (C1 foundation; C2–C9 add protected-branch, ref-rewriting, naming, project-local allowlist, chezmoi wiring) |
 
 ## References
 

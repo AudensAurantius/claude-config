@@ -28,11 +28,11 @@ setup() {
 @test "emits one line per install entry" {
     run "$MANIFEST"
     assert_success
-    # Phase 1 install map: 10 entries (wrapper, emitter, profile,
+    # Phase 1 install map: 12 entries (wrapper, emitter, profile,
     # managed-settings, _lib.lua, config-guard.lua, audit-event.lua,
-    # _hooks-manifest.sh, ACL script, provision script). Update this
-    # count when the manifest grows.
-    [ "${#lines[@]}" -eq 10 ]
+    # git-guard.lua, git-guard.yaml, _hooks-manifest.sh, ACL script,
+    # provision script). Update this count when the manifest grows.
+    [ "${#lines[@]}" -eq 12 ]
 }
 
 @test "each line has src|dst|mode shape with three pipe-separated fields" {
