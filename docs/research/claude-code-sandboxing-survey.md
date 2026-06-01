@@ -60,7 +60,7 @@ following readable:
 - The entire home directory (yes, all of it)
 
 Closing the gap is the user's responsibility via `denyRead` rules.
-The [quickstart guide](../guides/quickstart-sandbox.md) ships a
+The [upstream quickstart](../guides/quickstart-upstream.md) ships a
 14-path baseline `denyRead` list.
 
 ## What auto mode does with `.env`
