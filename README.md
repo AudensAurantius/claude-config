@@ -32,7 +32,9 @@ goals, and guiding principles.
   principles, future scope.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — seven-phase delivery plan with
   acceptance criteria per phase.
-- [`docs/SANDBOX_GUIDE.md`](docs/SANDBOX_GUIDE.md) — operator's reference
+- [`docs/architecture/`](docs/architecture/) — architectural reference (sandbox
+  model, hook plumbing, audit log); [`docs/guides/`](docs/guides/) — operator
+  how-to (OAuth bootstrap, profiles, troubleshooting)
   for the sandbox runtime (fills in as phases ship).
 - [`DECISION_LOG.md`](DECISION_LOG.md) — architectural decisions with
   rationale and alternatives considered.

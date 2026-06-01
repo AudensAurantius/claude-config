@@ -200,8 +200,10 @@ content like the user's personal CLAUDE.md.
 - Deployment behavior for new files is decided per-file at the time
   it's added; the deployment-table entry encodes the choice.
 - The CLAUDE.md marker-block content stays short — sandbox awareness
-  + a pointer to `docs/SANDBOX_GUIDE.md` — so the canonical user-
-  facing config remains user-controlled.
+  + a pointer to `docs/architecture/` (current-system reference) and
+  `docs/guides/` (operator how-to) — so the canonical user-facing
+  config remains user-controlled. (Originally `docs/SANDBOX_GUIDE.md`;
+  split per ClaudeConfig-8so / 2026-06-01.)
 
 ---
 
@@ -889,7 +891,9 @@ verified.
   shipped via the provisioning script).
 - **`provision-claude-session.sh` retained.** No deprecation; the
   script becomes part of standard install and gains documentation
-  under `docs/SANDBOX_GUIDE.md`.
+  under `docs/architecture/` (sandbox-model.md) and
+  `docs/guides/oauth-bootstrap.md`. (Originally `docs/SANDBOX_GUIDE.md`;
+  split per ClaudeConfig-8so / 2026-06-01.)
 - **Invocation chain documented.** The canonical sandboxed
   invocation is `sudo -u claude-session srt claude` (composed mode)
   or `sudo -u claude-session bwrap ... -- claude` (standalone mode).

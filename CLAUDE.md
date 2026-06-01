@@ -6,10 +6,18 @@ reference documentation. See:
 
 - [`docs/VISION.md`](docs/VISION.md) — problem statement, goals, guiding
   principles, future scope.
-- [`docs/SANDBOX_GUIDE.md`](docs/SANDBOX_GUIDE.md) — operator's reference
-  for the sandboxing model and self-modification workflow. (Pointer
-  target for the marker-block snippet inserted into `~/.claude/CLAUDE.md`
-  by the installer.)
+- [`docs/architecture/`](docs/architecture/) — current-system design
+  reference: [`sandbox-model.md`](docs/architecture/sandbox-model.md),
+  [`hooks.md`](docs/architecture/hooks.md),
+  [`audit-log.md`](docs/architecture/audit-log.md). (Pointer target
+  for the marker-block snippet inserted into `~/.claude/CLAUDE.md` by
+  the installer.)
+- [`docs/guides/`](docs/guides/) — operator how-to:
+  [`oauth-bootstrap.md`](docs/guides/oauth-bootstrap.md),
+  [`profile-authoring.md`](docs/guides/profile-authoring.md),
+  [`self-modification.md`](docs/guides/self-modification.md),
+  [`troubleshooting.md`](docs/guides/troubleshooting.md),
+  [`quickstart-upstream.md`](docs/guides/quickstart-upstream.md).
 - [`DECISION_LOG.md`](DECISION_LOG.md) — architectural decisions with
   rationale.
 - [`docs/transcripts/2026-05-04-sandbox-architecture-discussion.md`](docs/transcripts/2026-05-04-sandbox-architecture-discussion.md)
@@ -81,7 +89,12 @@ claude-config/
 │   └── scripts/                    # provisioning, user creation, ACLs
 ├── docs/
 │   ├── VISION.md                   # problem statement, goals, future scope
-│   ├── SANDBOX_GUIDE.md            # sandbox operator reference
+│   ├── ROADMAP.md                  # phased delivery plan
+│   ├── architecture/               # current-system design (sandbox-model, hooks, audit-log, …)
+│   ├── usage/                      # problem statement + use cases + threat model
+│   ├── guides/                     # operator how-to (oauth-bootstrap, profiles, troubleshooting, quickstart-upstream)
+│   ├── specs/                      # forward-looking dev specs (e.g. phase6-worker-isolation.md)
+│   ├── research/                   # upstream-tooling / ecosystem-overlap surveys
 │   ├── transcripts/                # design discussion transcripts
 │   ├── reviews/                    # review checkpoint summaries
 │   └── migration/                  # one-shot migration plans (delete after execution)

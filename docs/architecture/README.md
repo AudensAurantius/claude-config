@@ -18,10 +18,9 @@ those decisions were realized in code; the DEC entries explain *why*.
 
 ## Current pages
 
-- *(planned)* [`sandbox-model.md`](sandbox-model.md) — the two-mode
+- [`sandbox-model.md`](sandbox-model.md) — the two-mode
   (composed/standalone) sandbox model, permission layering, the
-  `claude-session` identity boundary. Migrated from the legacy
-  `SANDBOX_GUIDE.md` by bead ClaudeConfig-8so.
+  `claude-session` identity boundary.
 - *(planned)* [`identity-isolation.md`](identity-isolation.md) — DEC-012
   in prose: subuid mapping, ACL grants, what the boundary buys + does
   not buy.
