@@ -27,75 +27,75 @@ M.HOME = lib.HOME
 -- Override hook for tests (point at tmp dir); production reads from
 -- claude-session's HOME-relative cache.
 function M.cache_root()
-    return lib.HOME .. "/.cache/claude-config"
+  return lib.HOME .. "/.cache/claude-config"
 end
 
 -- Build the structured payload from the parsed input + event tag.
 -- Pure function; directly testable.
 function M.build_record(event, data, now)
-    return {
-        ts = now or lib.now_iso(),
-        event = event,
-        session_id = data and data.session_id or nil,
-        tool_name = data and data.tool_name or nil,
-        tool_input = data and data.tool_input or nil,
-        tool_response = data and data.tool_response or nil,
-        cwd = data and data.cwd or nil,
-    }
+  return {
+    ts = now or lib.now_iso(),
+    event = event,
+    session_id = data and data.session_id or nil,
+    tool_name = data and data.tool_name or nil,
+    tool_input = data and data.tool_input or nil,
+    tool_response = data and data.tool_response or nil,
+    cwd = data and data.cwd or nil,
+  }
 end
 
 -- Compose the one-line journald summary. Compact JSON for downstream
 -- parseability (40s.21 / OTEL Collector consumes the same shape).
 function M.journal_line(record)
-    local cjson = require("cjson")
-    return cjson.encode({
-        event = record.event,
-        tool = record.tool_name,
-        session = record.session_id,
-        cwd = record.cwd,
-    })
+  local cjson = require("cjson")
+  return cjson.encode({
+    event = record.event,
+    tool = record.tool_name,
+    session = record.session_id,
+    cwd = record.cwd,
+  })
 end
 
 function M.main(argv)
-    local cjson = require("cjson")
-    local flags = lib.parse_kv_args(argv)
-    local event = flags.event or "Unknown"
+  local cjson = require("cjson")
+  local flags = lib.parse_kv_args(argv)
+  local event = flags.event or "Unknown"
 
-    local raw = io.read("*all") or ""
-    local ok, data = pcall(cjson.decode, raw)
-    if not ok then
-        io.stderr:write("audit-event: unparseable hook input; emitting decision only\n")
-        data = nil
-    end
+  local raw = io.read("*all") or ""
+  local ok, data = pcall(cjson.decode, raw)
+  if not ok then
+    io.stderr:write("audit-event: unparseable hook input; emitting decision only\n")
+    data = nil
+  end
 
-    if data then
-        local record = M.build_record(event, data)
-        lib.journal("claude-session", "info", M.journal_line(record))
-        if record.session_id and record.session_id ~= "" then
-            lib.append_jsonl(M.cache_root() .. "/" .. record.session_id, record)
-        end
+  if data then
+    local record = M.build_record(event, data)
+    lib.journal("claude-session", "info", M.journal_line(record))
+    if record.session_id and record.session_id ~= "" then
+      lib.append_jsonl(M.cache_root() .. "/" .. record.session_id, record)
     end
+  end
 
-    -- PreToolUse needs an explicit allow; PostToolUse just acknowledges
-    -- the event without a decision field.
-    if event == "PreToolUse" then
-        lib.emit_hook_output({
-            hookSpecificOutput = {
-                hookEventName = "PreToolUse",
-                permissionDecision = "allow",
-                permissionDecisionReason = "audit-event: informational; not a gate",
-            },
-        })
-    else
-        lib.emit_hook_output({
-            hookSpecificOutput = {hookEventName = event},
-        })
-    end
-    return 0
+  -- PreToolUse needs an explicit allow; PostToolUse just acknowledges
+  -- the event without a decision field.
+  if event == "PreToolUse" then
+    lib.emit_hook_output({
+      hookSpecificOutput = {
+        hookEventName = "PreToolUse",
+        permissionDecision = "allow",
+        permissionDecisionReason = "audit-event: informational; not a gate",
+      },
+    })
+  else
+    lib.emit_hook_output({
+      hookSpecificOutput = { hookEventName = event },
+    })
+  end
+  return 0
 end
 
 if lib.is_main("audit-event.lua") then
-    os.exit(M.main(arg))
+  os.exit(M.main(arg))
 end
 
 return M

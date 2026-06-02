@@ -1,0 +1,45 @@
+{
+    "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+    "_comment": "ClaudeConfig-b7x: strict-mode Lua diagnostics. lua-language-server --check uses this. Production-quality typing expectation; F-fmt2 retrofits full annotations across all hooks.",
+
+    "runtime.version": "LuaJIT",
+    "runtime.path": [
+        "?.lua",
+        "?/init.lua",
+        "claude/scripts/hooks/?.lua"
+    ],
+
+    "diagnostics.globals": ["arg", "describe", "it", "setup", "teardown", "before_each", "after_each", "stub", "spy", "mock", "assert"],
+    "diagnostics.severity": {
+        "undefined-global": "Error",
+        "undefined-field": "Error",
+        "missing-fields": "Error",
+        "missing-return": "Error",
+        "missing-return-value": "Error",
+        "missing-parameter": "Error",
+        "redundant-parameter": "Error",
+        "redundant-value": "Warning",
+        "param-type-mismatch": "Error",
+        "return-type-mismatch": "Error",
+        "assign-type-mismatch": "Error",
+        "cast-type-mismatch": "Error",
+        "need-check-nil": "Warning",
+        "unused-local": "Warning",
+        "unused-function": "Warning",
+        "deprecated": "Warning"
+    },
+    "diagnostics.unusedLocalExclude": ["_*"],
+
+    "workspace.checkThirdParty": false,
+    "workspace.library": [],
+
+    "type.castNumberToInteger": false,
+    "type.weakUnionCheck": false,
+    "type.weakNilCheck": false,
+
+    "completion.callSnippet": "Replace",
+
+    "format.enable": false,
+
+    "telemetry.enable": false
+}

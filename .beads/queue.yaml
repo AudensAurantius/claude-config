@@ -1,5 +1,9 @@
 lua-hooks:
-- ClaudeConfig-bi0.1
+- ClaudeConfig-b7x
+- ClaudeConfig-zdk
+- ClaudeConfig-ew7
+- ClaudeConfig-dsm
+- ClaudeConfig-4g0
 - ClaudeConfig-bi0.2
 - ClaudeConfig-bi0.3
 - ClaudeConfig-bi0.8
@@ -8,6 +12,7 @@ lua-hooks:
 - ClaudeConfig-bi0.6
 - ClaudeConfig-bi0.7
 - ClaudeConfig-bi0.9
+- ClaudeConfig-nun
 research:
 - J121-1aj
 - J121-2ou

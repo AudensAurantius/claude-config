@@ -75,7 +75,7 @@ set -euo pipefail
 
 # ── Defaults / arg parsing ────────────────────────────────────────────────────
 
-MODE="composed"          # composed | standalone | oauth
+MODE="composed" # composed | standalone | oauth
 PROFILE_NAME="default"
 DRY_RUN=false
 PROFILE_DIR="${CLAUDE_SANDBOX_PROFILE_DIR:-$HOME/.config/claude-sandbox/profiles}"
@@ -103,9 +103,12 @@ fi
 resolve_acl_script() {
     local c
     for c in "${CLAUDE_SANDBOX_ACL_SCRIPT:-}" \
-             "$SELF_DIR/../share/claude-sandbox/scripts/setup-claude-session-acls.sh" \
-             "$SELF_DIR/../scripts/setup-claude-session-acls.sh"; do
-        [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+        "$SELF_DIR/../share/claude-sandbox/scripts/setup-claude-session-acls.sh" \
+        "$SELF_DIR/../scripts/setup-claude-session-acls.sh"; do
+        [ -n "$c" ] && [ -x "$c" ] && {
+            echo "$c"
+            return 0
+        }
     done
     return 1
 }
@@ -117,7 +120,7 @@ resolve_acl_script() {
 # is network-bound and re-downloads the native binary, so it only fires when
 # actually behind, and is skippable via CLAUDE_SANDBOX_SKIP_VERSION_SYNC=1
 # (offline / avoid chasing frequent host bumps).
-behind() {  # behind A B -> true if A sorts strictly lower than B
+behind() { # behind A B -> true if A sorts strictly lower than B
     [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
 }
 # Launch-time assembly (ClaudeConfig-40s.15.8, DEC-016): mirror the host
@@ -131,7 +134,8 @@ CLAUDE_DENY_RULES_JSON='["Read(**/.env)","Read(**/.env.*)","Read(**/*.pem)","Rea
 assemble_claude_dir() {
     local stage d
     stage="${TMPDIR:-/tmp}/claude-sandbox-claudedir.$(id -u)"
-    rm -rf "$stage"; mkdir -p "$stage"
+    rm -rf "$stage"
+    mkdir -p "$stage"
     for d in skills agents commands scripts; do
         [ -d "$USER_HOME/.claude/$d" ] && cp -r "$USER_HOME/.claude/$d" "$stage/$d"
     done
@@ -147,16 +151,16 @@ assemble_claude_dir() {
     for d in skills agents commands scripts hooks; do
         if [ -d "$stage/$d" ]; then
             sudo -u "$SANDBOX_USER" -H bash -c \
-                'mkdir -p "$HOME/.claude" && rsync -a --delete "$1/" "$HOME/.claude/$2/"' _ "$stage/$d" "$d" \
-                || echo "claude-sandbox: warning — failed to mirror ~/.claude/$d to $SANDBOX_USER" >&2
+                'mkdir -p "$HOME/.claude" && rsync -a --delete "$1/" "$HOME/.claude/$2/"' _ "$stage/$d" "$d" ||
+                echo "claude-sandbox: warning — failed to mirror ~/.claude/$d to $SANDBOX_USER" >&2
         fi
     done
     rm -rf "$stage"
     # Pre-create the audit cache dir so the standalone profile's
     # ~/.cache/claude-config rw bind doesn't fail on a missing source.
     # audit-event.lua creates per-session subdirs inside this on demand.
-    sudo -u "$SANDBOX_USER" -H bash -c 'mkdir -p "$HOME/.cache/claude-config"' \
-        || echo "claude-sandbox: warning — failed to pre-create audit cache dir for $SANDBOX_USER" >&2
+    sudo -u "$SANDBOX_USER" -H bash -c 'mkdir -p "$HOME/.cache/claude-config"' ||
+        echo "claude-sandbox: warning — failed to pre-create audit cache dir for $SANDBOX_USER" >&2
     # claude-session-scoped Claude Code permission deny rules (40s.16 re-home):
     # app-layer matcher where **/.env etc. DO work; scoped to claude-session so
     # the host user's interactive sessions are unaffected. PLUS the canonical
@@ -180,16 +184,19 @@ assemble_claude_dir() {
                 .hooks = \$h" "$f" > "$t" && mv "$t" "$f"
         else
             t=$(mktemp); jq --argjson d "$1" ".permissions = (.permissions // {}) + {deny: \$d}" "$f" > "$t" && mv "$t" "$f"
-        fi' _ "$CLAUDE_DENY_RULES_JSON" "$hooks_json" \
-        || echo "claude-sandbox: warning — failed to set settings.json for $SANDBOX_USER" >&2
+        fi' _ "$CLAUDE_DENY_RULES_JSON" "$hooks_json" ||
+        echo "claude-sandbox: warning — failed to set settings.json for $SANDBOX_USER" >&2
 }
 
 # Resolve _hooks-manifest.sh across installed vs repo layouts.
 resolve_hooks_manifest() {
     local c
     for c in "$SELF_DIR/../share/claude-sandbox/scripts/_hooks-manifest.sh" \
-             "$SELF_DIR/../scripts/_hooks-manifest.sh"; do
-        [ -x "$c" ] && { readlink -f "$c"; return 0; }
+        "$SELF_DIR/../scripts/_hooks-manifest.sh"; do
+        [ -x "$c" ] && {
+            readlink -f "$c"
+            return 0
+        }
     done
     return 1
 }
@@ -229,25 +236,44 @@ sync_claude_session_version() {
 }
 
 usage() {
-    sed -n '/^# claude-sandbox/,/^# the separate-principal guarantee\./p' "${BASH_SOURCE[0]}" \
-        | sed 's/^# \{0,1\}//'
+    sed -n '/^# claude-sandbox/,/^# the separate-principal guarantee\./p' "${BASH_SOURCE[0]}" |
+        sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --standalone) MODE="standalone"; shift ;;
-        --oauth)      MODE="oauth"; shift ;;
-        --profile)    PROFILE_NAME="$2"; shift 2 ;;
-        --dry-run)    DRY_RUN=true; shift ;;
-        --help|-h)    usage; exit 0 ;;
+        --standalone)
+            MODE="standalone"
+            shift
+            ;;
+        --oauth)
+            MODE="oauth"
+            shift
+            ;;
+        --profile)
+            PROFILE_NAME="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help | -h)
+            usage
+            exit 0
+            ;;
         --version)
             echo "claude-sandbox 0.2.0 (Phase 1, two-mode)"
             bwrap --version 2>/dev/null || echo "bwrap: not installed"
             srt --version 2>/dev/null | sed 's/^/srt /' || echo "srt: not installed"
             claude --version 2>/dev/null || echo "claude: not installed"
-            exit 0 ;;
-        --)           shift; break ;;
-        *)            break ;;   # rest is claude's; see --help for forcing
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *) break ;; # rest is claude's; see --help for forcing
     esac
 done
 # Remaining "$@" are claude args.
@@ -255,17 +281,24 @@ done
 # ── Preconditions ─────────────────────────────────────────────────────────────
 
 PROFILE="${PROFILE_DIR}/${PROFILE_NAME}.yaml"
-[ -f "$PROFILE" ] || { echo "claude-sandbox: profile not found: $PROFILE" >&2; exit 1; }
+[ -f "$PROFILE" ] || {
+    echo "claude-sandbox: profile not found: $PROFILE" >&2
+    exit 1
+}
 
 require() {
     command -v "$1" >/dev/null 2>&1 || {
-        echo "claude-sandbox: required tool not on PATH: $1" >&2; exit 1; }
+        echo "claude-sandbox: required tool not on PATH: $1" >&2
+        exit 1
+    }
 }
-require yq; require jq; require getent
+require yq
+require jq
+require getent
 case "$MODE" in
     standalone) require bwrap ;;
-    composed)   require srt ;;
-    oauth)      : ;;  # bare cwd-controlled claude; needs neither bwrap nor srt
+    composed) require srt ;;
+    oauth) : ;; # bare cwd-controlled claude; needs neither bwrap nor srt
 esac
 
 # ── Host-side prep ────────────────────────────────────────────────────────────
@@ -291,15 +324,16 @@ assert_safe_cwd() {
             echo "claude-sandbox: refusing to sandbox a dotfile/config dir: $ACTIVE_PROJECT" >&2
             echo "  Sandboxing here would grant claude-session access to it (inherited-cwd risk, 40s.15.10)." >&2
             echo "  cd into a real project directory and re-run." >&2
-            exit 1 ;;
+            exit 1
+            ;;
     esac
 }
 if [ "$MODE" != "oauth" ]; then assert_safe_cwd; fi
 
 # Resolve the identity switch (DEC-012). Degrade gracefully for testability.
 SANDBOX_USER=$(yq -r '.sandbox_user.name' "$PROFILE")
-if getent passwd "$SANDBOX_USER" >/dev/null 2>&1 \
-   && sudo -n -u "$SANDBOX_USER" true >/dev/null 2>&1; then
+if getent passwd "$SANDBOX_USER" >/dev/null 2>&1 &&
+    sudo -n -u "$SANDBOX_USER" true >/dev/null 2>&1; then
     SANDBOX_HOME=$(getent passwd "$SANDBOX_USER" | cut -d: -f6)
     USE_SANDBOX_USER=true
 else
@@ -314,7 +348,8 @@ else
     USE_SANDBOX_USER=false
 fi
 
-IS_WSL=false; [ -d /mnt/wsl ] && IS_WSL=true
+IS_WSL=false
+[ -d /mnt/wsl ] && IS_WSL=true
 
 substitute() {
     sed -e "s|\${USER_HOME}|${USER_HOME}|g" \
@@ -383,23 +418,35 @@ build_bwrap_args() {
     while IFS=$'\t' read -r src tgt when; do
         [ -z "$src" ] && continue
         [ "$when" = "wsl_only" ] && [ "$IS_WSL" = false ] && continue
-        src=$(printf '%s' "$src" | substitute); tgt=$(printf '%s' "$tgt" | substitute)
-        [ -e "$src" ] || { echo "claude-sandbox: skip ro-bind (missing): $src" >&2; continue; }
+        src=$(printf '%s' "$src" | substitute)
+        tgt=$(printf '%s' "$tgt" | substitute)
+        [ -e "$src" ] || {
+            echo "claude-sandbox: skip ro-bind (missing): $src" >&2
+            continue
+        }
         BWRAP_ARGS+=(--ro-bind "$src" "$tgt")
     done < <(yq -r '.read_only[] | [.source, .target, (.when // "")] | @tsv' "$PROFILE")
     while IFS=$'\t' read -r src tgt; do
         [ -z "$src" ] && continue
-        src=$(printf '%s' "$src" | substitute); tgt=$(printf '%s' "$tgt" | substitute)
-        [ -e "$src" ] || { echo "claude-sandbox: skip bind (missing): $src" >&2; continue; }
+        src=$(printf '%s' "$src" | substitute)
+        tgt=$(printf '%s' "$tgt" | substitute)
+        [ -e "$src" ] || {
+            echo "claude-sandbox: skip bind (missing): $src" >&2
+            continue
+        }
         BWRAP_ARGS+=(--bind "$src" "$tgt")
     done < <(yq -r '.read_write[] | [.source, .target] | @tsv' "$PROFILE")
     while IFS=$'\t' read -r src tgt mode; do
         [ -z "$src" ] && continue
-        src=$(printf '%s' "$src" | substitute); tgt=$(printf '%s' "$tgt" | substitute)
-        sandbox_path_exists "$src" || { echo "claude-sandbox: skip sandbox_home bind (missing): $src" >&2; continue; }
+        src=$(printf '%s' "$src" | substitute)
+        tgt=$(printf '%s' "$tgt" | substitute)
+        sandbox_path_exists "$src" || {
+            echo "claude-sandbox: skip sandbox_home bind (missing): $src" >&2
+            continue
+        }
         case "$mode" in
-            rw)      BWRAP_ARGS+=(--bind    "$src" "$tgt") ;;
-            *)       BWRAP_ARGS+=(--ro-bind "$src" "$tgt") ;;
+            rw) BWRAP_ARGS+=(--bind "$src" "$tgt") ;;
+            *) BWRAP_ARGS+=(--ro-bind "$src" "$tgt") ;;
         esac
     done < <(yq -r '.sandbox_home[] | [.source, .target, (.mode // "ro")] | @tsv' "$PROFILE")
     # Standalone network is ON/OFF only: bwrap has no L7 filtering, so it
@@ -409,9 +456,12 @@ build_bwrap_args() {
     # Until then, `host` = full host network. The composed: profile section's
     # allowed_domains does NOT apply here — that drives srt only.
     case "$(yq -r '.network.policy' "$PROFILE")" in
-        host)  BWRAP_ARGS+=(--unshare-all --share-net) ;;
-        none)  BWRAP_ARGS+=(--unshare-all) ;;
-        *)     echo "claude-sandbox: unsupported network policy" >&2; exit 1 ;;
+        host) BWRAP_ARGS+=(--unshare-all --share-net) ;;
+        none) BWRAP_ARGS+=(--unshare-all) ;;
+        *)
+            echo "claude-sandbox: unsupported network policy" >&2
+            exit 1
+            ;;
     esac
     BWRAP_ARGS+=(--die-with-parent --hostname claude-sandbox --chdir "$ACTIVE_PROJECT")
 }
@@ -421,8 +471,8 @@ build_bwrap_args() {
 # Sync claude-session's claude to the host version if behind (40s.15.7). Real
 # runs + separate-user only; skippable for offline / to avoid chasing frequent
 # host auto-updates (each sync re-downloads the native binary).
-if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ] \
-   && [ -z "${CLAUDE_SANDBOX_SKIP_VERSION_SYNC:-}" ]; then
+if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ] &&
+    [ -z "${CLAUDE_SANDBOX_SKIP_VERSION_SYNC:-}" ]; then
     sync_claude_session_version
 fi
 
@@ -441,8 +491,8 @@ fi
 if [ "$DRY_RUN" = false ] && [ "$USE_SANDBOX_USER" = true ] && [ "$MODE" != "oauth" ]; then
     if acl_script="$(resolve_acl_script)"; then
         "$acl_script" --user "$SANDBOX_USER" --home-dir "$USER_HOME" \
-            --project "$ACTIVE_PROJECT" >/dev/null \
-            || echo "claude-sandbox: warning — project ACL grant failed; sandbox may not access $ACTIVE_PROJECT" >&2
+            --project "$ACTIVE_PROJECT" >/dev/null ||
+            echo "claude-sandbox: warning — project ACL grant failed; sandbox may not access $ACTIVE_PROJECT" >&2
     else
         echo "claude-sandbox: warning — ACL script not found; sandbox may not access $ACTIVE_PROJECT" >&2
     fi
@@ -467,24 +517,28 @@ elif [ "$MODE" = "composed" ]; then
     if [ -n "$SRT_SETTINGS_OVERRIDE" ]; then
         SRT_SETTINGS_FILE="$SRT_SETTINGS_OVERRIDE"
         [ -f "$SRT_SETTINGS_FILE" ] || {
-            echo "claude-sandbox: CLAUDE_SANDBOX_SRT_SETTINGS not found: $SRT_SETTINGS_FILE" >&2; exit 1; }
+            echo "claude-sandbox: CLAUDE_SANDBOX_SRT_SETTINGS not found: $SRT_SETTINGS_FILE" >&2
+            exit 1
+        }
     else
         [ -x "$EMITTER" ] || {
-            echo "claude-sandbox: settings emitter not found: $EMITTER" >&2; exit 1; }
+            echo "claude-sandbox: settings emitter not found: $EMITTER" >&2
+            exit 1
+        }
         # /tmp so the claude-session UID can read it; fixed per-user+profile
         # name, overwritten each run (Phase 1 single-session; Phase 3+
         # per-session worktrees need a per-session path).
         SRT_SETTINGS_FILE="${TMPDIR:-/tmp}/claude-sandbox-srt.$(id -u).${PROFILE_NAME}.json"
         ACTIVE_PROJECT="$ACTIVE_PROJECT" SANDBOX_HOME="$SANDBOX_HOME" \
-            "$EMITTER" "$PROFILE" > "$SRT_SETTINGS_FILE"
+            "$EMITTER" "$PROFILE" >"$SRT_SETTINGS_FILE"
         chmod 0644 "$SRT_SETTINGS_FILE"
     fi
     # Deterministic cwd: cd to the project rather than relying on sudo's
     # inherited cwd (cwd-guard + 40s.15.10). Mirrors standalone's bwrap --chdir.
     # shellcheck disable=SC2016  # $ACTIVE_PROJECT/$0/$@ expand in the bash -c subshell, by design
-    CMD=("${SCRUB_ENV[@]}" "ACTIVE_PROJECT=$ACTIVE_PROJECT" \
-         bash -c 'cd "$ACTIVE_PROJECT" && exec srt --settings "$0" claude "$@"' \
-         "$SRT_SETTINGS_FILE" "$@")
+    CMD=("${SCRUB_ENV[@]}" "ACTIVE_PROJECT=$ACTIVE_PROJECT"
+        bash -c 'cd "$ACTIVE_PROJECT" && exec srt --settings "$0" claude "$@"'
+        "$SRT_SETTINGS_FILE" "$@")
 else
     build_bwrap_args
     CMD=("${SCRUB_ENV[@]}" bwrap "${BWRAP_ARGS[@]}" -- claude "$@")
@@ -499,7 +553,9 @@ fi
 
 if [ "$DRY_RUN" = true ]; then
     echo "claude-sandbox: mode=$MODE profile=$PROFILE_NAME identity=$([ "$USE_SANDBOX_USER" = true ] && echo "$SANDBOX_USER" || echo "same-uid(degraded)")"
-    printf 'exec:'; printf ' %q' "${FINAL[@]}"; printf '\n'
+    printf 'exec:'
+    printf ' %q' "${FINAL[@]}"
+    printf '\n'
     exit 0
 fi
 

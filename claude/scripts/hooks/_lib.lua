@@ -33,13 +33,13 @@ M.HOME = os.getenv("HOME") or "/"
 -- ── Time ────────────────────────────────────────────────────────────
 
 function M.now_iso()
-    -- Best-effort millisecond precision: Lua stdlib clock is seconds;
-    -- os.clock() gives fractional CPU seconds since process start as
-    -- an approximation. Adjacent audit events typically arrive
-    -- >1 ms apart so the ordering is still meaningful.
-    local t = os.time()
-    local ms = math.floor((os.clock() % 1) * 1000)
-    return os.date("!%Y-%m-%dT%H:%M:%S", t) .. string.format(".%03dZ", ms)
+  -- Best-effort millisecond precision: Lua stdlib clock is seconds;
+  -- os.clock() gives fractional CPU seconds since process start as
+  -- an approximation. Adjacent audit events typically arrive
+  -- >1 ms apart so the ordering is still meaningful.
+  local t = os.time()
+  local ms = math.floor((os.clock() % 1) * 1000)
+  return os.date("!%Y-%m-%dT%H:%M:%S", t) .. string.format(".%03dZ", ms)
 end
 
 -- ── Paths ───────────────────────────────────────────────────────────
@@ -49,24 +49,28 @@ end
 -- write access the OS-layer bind already blocks in our threat model).
 -- Returns nil for empty / nil / unclassifiable-relative paths.
 function M.normalize_path(path, home_override)
-    if not path or path == "" then return nil end
-    local home = home_override or M.HOME
-    if path:sub(1, 2) == "~/" then
-        path = home .. path:sub(2)
-    elseif path == "~" then
-        path = home
+  if not path or path == "" then
+    return nil
+  end
+  local home = home_override or M.HOME
+  if path:sub(1, 2) == "~/" then
+    path = home .. path:sub(2)
+  elseif path == "~" then
+    path = home
+  end
+  if path:sub(1, 1) ~= "/" then
+    return nil
+  end
+  path = path:gsub("/+", "/")
+  local parts = {}
+  for part in path:gmatch("[^/]+") do
+    if part == ".." then
+      parts[#parts] = nil
+    elseif part ~= "." then
+      parts[#parts + 1] = part
     end
-    if path:sub(1, 1) ~= "/" then return nil end
-    path = path:gsub("/+", "/")
-    local parts = {}
-    for part in path:gmatch("[^/]+") do
-        if part == ".." then
-            parts[#parts] = nil
-        elseif part ~= "." then
-            parts[#parts + 1] = part
-        end
-    end
-    return "/" .. table.concat(parts, "/")
+  end
+  return "/" .. table.concat(parts, "/")
 end
 
 -- Returns true iff the normalized path matches any entry in
@@ -74,18 +78,22 @@ end
 -- (string-prefix with `/` boundary, so `/foo` does NOT match
 -- `/foo-bar`). All inputs are normalized internally.
 function M.match_paths(path, exact_paths, prefixes)
-    local p = M.normalize_path(path)
-    if not p then return false end
-    for _, target in ipairs(exact_paths or {}) do
-        if p == M.normalize_path(target) then return true end
-    end
-    for _, prefix in ipairs(prefixes or {}) do
-        local n = M.normalize_path(prefix)
-        if n and (p == n or p:sub(1, #n + 1) == n .. "/") then
-            return true
-        end
-    end
+  local p = M.normalize_path(path)
+  if not p then
     return false
+  end
+  for _, target in ipairs(exact_paths or {}) do
+    if p == M.normalize_path(target) then
+      return true
+    end
+  end
+  for _, prefix in ipairs(prefixes or {}) do
+    local n = M.normalize_path(prefix)
+    if n and (p == n or p:sub(1, #n + 1) == n .. "/") then
+      return true
+    end
+  end
+  return false
 end
 
 -- ── Arg parsing ────────────────────────────────────────────────────
@@ -94,12 +102,14 @@ end
 -- Ignores positional args + bare flags. Sufficient for hook entry
 -- points; not a full argparse.
 function M.parse_kv_args(argv)
-    local out = {}
-    for _, a in ipairs(argv or {}) do
-        local k, v = a:match("^%-%-([%w_%-]+)=(.+)$")
-        if k then out[k] = v end
+  local out = {}
+  for _, a in ipairs(argv or {}) do
+    local k, v = a:match("^%-%-([%w_%-]+)=(.+)$")
+    if k then
+      out[k] = v
     end
-    return out
+  end
+  return out
 end
 
 -- ── Output ──────────────────────────────────────────────────────────
@@ -108,23 +118,24 @@ end
 -- priority. Falls back to stderr on systems without systemd-cat.
 -- Never fatal.
 function M.journal(tag, priority, line)
-    local cmd = string.format("systemd-cat -t %q -p %q 2>/dev/null",
-        tag, priority)
-    local p = io.popen(cmd, "w")
-    if p then
-        p:write(line)
-        local ok = p:close()
-        if ok then return true end
+  local cmd = string.format("systemd-cat -t %q -p %q 2>/dev/null", tag, priority)
+  local p = io.popen(cmd, "w")
+  if p then
+    p:write(line)
+    local ok = p:close()
+    if ok then
+      return true
     end
-    io.stderr:write(tag .. ": " .. line .. "\n")
-    return false
+  end
+  io.stderr:write(tag .. ": " .. line .. "\n")
+  return false
 end
 
 -- Write a Claude Code hook output payload (a `hookSpecificOutput`-
 -- shaped table) as one line of JSON on stdout.
 function M.emit_hook_output(payload)
-    io.stdout:write(cjson.encode(payload))
-    io.stdout:write("\n")
+  io.stdout:write(cjson.encode(payload))
+  io.stdout:write("\n")
 end
 
 -- Append one JSONL line (cjson.encode(record) + newline) to
@@ -134,21 +145,23 @@ end
 -- session_id (which is opaque from our standpoint).
 -- Returns true on success, false (with stderr diagnostic) otherwise.
 function M.append_jsonl(dir, record)
-    if not dir or dir == "" then return false end
-    if dir:find("[^%w%-%./_]") then
-        io.stderr:write("_lib.append_jsonl: unsafe dir path; skipping\n")
-        return false
-    end
-    os.execute(string.format("mkdir -p %q", dir))
-    local f, err = io.open(dir .. "/tool-calls.jsonl", "a")
-    if not f then
-        io.stderr:write("_lib.append_jsonl: open failed: " .. (err or "") .. "\n")
-        return false
-    end
-    f:write(cjson.encode(record))
-    f:write("\n")
-    f:close()
-    return true
+  if not dir or dir == "" then
+    return false
+  end
+  if dir:find("[^%w%-%./_]") then
+    io.stderr:write("_lib.append_jsonl: unsafe dir path; skipping\n")
+    return false
+  end
+  os.execute(string.format("mkdir -p %q", dir))
+  local f, err = io.open(dir .. "/tool-calls.jsonl", "a")
+  if not f then
+    io.stderr:write("_lib.append_jsonl: open failed: " .. (err or "") .. "\n")
+    return false
+  end
+  f:write(cjson.encode(record))
+  f:write("\n")
+  f:close()
+  return true
 end
 
 -- ── Runner guard ───────────────────────────────────────────────────
@@ -159,10 +172,12 @@ end
 --     if lib.is_main("my-hook.lua") then os.exit(M.main(arg)) end
 --     return M
 function M.is_main(basename)
-    if not (arg and arg[0]) then return false end
-    -- Pattern: end-of-string match for basename (escape dots).
-    local pat = basename:gsub("([%.%-])", "%%%1") .. "$"
-    return arg[0]:match(pat) ~= nil
+  if not (arg and arg[0]) then
+    return false
+  end
+  -- Pattern: end-of-string match for basename (escape dots).
+  local pat = basename:gsub("([%.%-])", "%%%1") .. "$"
+  return arg[0]:match(pat) ~= nil
 end
 
 return M

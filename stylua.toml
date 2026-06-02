@@ -1,0 +1,7 @@
+# stylua.toml — Lua formatter configuration (ClaudeConfig-b7x).
+# Mirrors ~/.config/nvim/stylua.toml so claude-config Lua reads the
+# same way as the user's nvim Lua.
+
+indent_type = "Spaces"
+indent_width = 2
+column_width = 120

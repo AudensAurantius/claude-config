@@ -58,14 +58,38 @@ usage() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -h|--help)     usage; exit 0 ;;
-        --uninstall)   mode="uninstall"; shift ;;
-        --user)        claude_user="$2"; shift 2 ;;
-        --host-user)   host_user="$2"; shift 2 ;;
-        --host-home)   host_home="$2"; shift 2 ;;
-        --acl-script)  acl_script="$2"; shift 2 ;;
-        --no-acls)     do_acls=0; shift ;;
-        *) echo "provision-claude-session.sh: unknown arg: $1" >&2; exit 1 ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --uninstall)
+            mode="uninstall"
+            shift
+            ;;
+        --user)
+            claude_user="$2"
+            shift 2
+            ;;
+        --host-user)
+            host_user="$2"
+            shift 2
+            ;;
+        --host-home)
+            host_home="$2"
+            shift 2
+            ;;
+        --acl-script)
+            acl_script="$2"
+            shift 2
+            ;;
+        --no-acls)
+            do_acls=0
+            shift
+            ;;
+        *)
+            echo "provision-claude-session.sh: unknown arg: $1" >&2
+            exit 1
+            ;;
     esac
 done
 
@@ -105,12 +129,12 @@ if [ "$(id -u)" -ne 0 ]; then
     # would pass an empty-string argument when the condition is false.
     # shellcheck disable=SC2046
     exec sudo -E "${BASH_SOURCE[0]}" \
-        $( [ "$mode" = "uninstall" ] && printf '%s\n' --uninstall ) \
+        $([ "$mode" = "uninstall" ] && printf '%s\n' --uninstall) \
         --user "$claude_user" \
         --host-user "$host_user" \
         --host-home "$host_home" \
         --acl-script "$acl_script" \
-        $( [ "$do_acls" -eq 0 ] && printf '%s\n' --no-acls )
+        $([ "$do_acls" -eq 0 ] && printf '%s\n' --no-acls)
 fi
 
 # ── /etc/subuid + /etc/subgid helpers ────────────────────────────────────────
@@ -122,29 +146,32 @@ subuid_line() { printf '%s:%s:1\n' "$1" "$2"; }
 
 add_sub_mapping() {
     local file="$1" user="$2" id="$3"
-    local line; line="$(subuid_line "$user" "$id")"
+    local line
+    line="$(subuid_line "$user" "$id")"
     if grep -qxF "$line" "$file" 2>/dev/null; then
         echo "  ✓ ${file}: already has '${line}'"
         return 0
     fi
     # Avoid trailing-newline glitches: ensure file ends in a newline first.
     if [ -s "$file" ] && [ "$(tail -c1 "$file")" != "" ]; then
-        printf '\n' >> "$file"
+        printf '\n' >>"$file"
     fi
-    printf '%s\n' "$line" >> "$file"
+    printf '%s\n' "$line" >>"$file"
     echo "  ✓ ${file}: added '${line}'"
 }
 
 remove_sub_mapping() {
     local file="$1" user="$2" id="$3"
-    local line; line="$(subuid_line "$user" "$id")"
+    local line
+    line="$(subuid_line "$user" "$id")"
     if [ ! -f "$file" ]; then return 0; fi
     if ! grep -qxF "$line" "$file"; then
         echo "  ✓ ${file}: '${line}' already absent"
         return 0
     fi
-    local tmp; tmp="$(mktemp)"
-    grep -vxF "$line" "$file" > "$tmp"
+    local tmp
+    tmp="$(mktemp)"
+    grep -vxF "$line" "$file" >"$tmp"
     install -m 0644 "$tmp" "$file"
     rm -f "$tmp"
     echo "  ✓ ${file}: removed '${line}'"
@@ -237,7 +264,8 @@ do_install() {
     #    installed srt package version.
     local srt_version arch srt_pkg_json cur_srt
     srt_version="${SRT_VERSION:-0.0.52}"
-    arch="$(uname -m)"; [ "$arch" = "x86_64" ] && arch="x64"
+    arch="$(uname -m)"
+    [ "$arch" = "x86_64" ] && arch="x64"
     srt_pkg_json="${claude_home}/.local/lib/node_modules/@anthropic-ai/sandbox-runtime/package.json"
     cur_srt=""
     [ -f "$srt_pkg_json" ] && cur_srt="$(jq -r .version "$srt_pkg_json" 2>/dev/null || true)"
@@ -307,6 +335,23 @@ LUASETUP
         echo "  ✓ ${claude_user} already has the Lua toolchain (${lua_marker_cur})"
     fi
 
+    # 7b. Dev-tool stack for claude-session (ClaudeConfig-b7x / F-fmt1):
+    #     stylua + shfmt + lua-language-server. Same install script the host
+    #     uses (`just dev-tools`); invoked with PREFIX=<claude-session
+    #     home>/.local so each tool lands in claude-session's per-user tree
+    #     (DEC-016 ownership pattern).
+    local devtools_script
+    devtools_script="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/install-dev-tools.sh"
+    if [ -x "$devtools_script" ]; then
+        echo "→ provisioning dev tools (stylua + shfmt + lua-language-server) for ${claude_user} ..."
+        sudo -u "$claude_user" -H \
+            env "PREFIX=${claude_home}/.local" \
+            "$devtools_script" ||
+            echo "  ! dev-tool provisioning for ${claude_user} returned non-zero; continuing" >&2
+    else
+        echo "  • install-dev-tools.sh not found at ${devtools_script}; skipping (F-fmt1 deferred)" >&2
+    fi
+
     # 8. Multi-interpreter availability check (ClaudeConfig-58n.2; DEC-020).
     #    Project-specific hooks under <project>/.claude-session/hooks/ can be
     #    written in any of the supported interpreters via #! shebang
@@ -359,8 +404,8 @@ do_uninstall() {
         local projects_dir="${host_home}/.claude/projects"
         if [ -d "$projects_dir" ]; then
             local target="${claude_user}"
-            [ -n "$claude_uid" ] && target="$claude_uid"  # numeric works either way
-            setfacl -R    -x "u:${target}" "$projects_dir" 2>/dev/null || true
+            [ -n "$claude_uid" ] && target="$claude_uid" # numeric works either way
+            setfacl -R -x "u:${target}" "$projects_dir" 2>/dev/null || true
             setfacl -R -d -x "u:${target}" "$projects_dir" 2>/dev/null || true
             echo "  ✓ stripped ACLs for '${target}' from ${projects_dir}"
         fi
@@ -392,6 +437,6 @@ do_uninstall() {
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
 case "$mode" in
-    install)   do_install ;;
+    install) do_install ;;
     uninstall) do_uninstall ;;
 esac

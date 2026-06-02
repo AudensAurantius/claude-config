@@ -40,6 +40,11 @@ default:
 sync:
     uv sync
 
+# Install host-side dev tools (stylua, shfmt, lua-language-server) into
+# ~/.local/. Idempotent. ClaudeConfig-b7x.
+dev-tools:
+    ./sandbox/scripts/install-dev-tools.sh
+
 # Lint Python (ruff + mypy)
 lint:
     uv run ruff check
@@ -49,13 +54,34 @@ lint:
 fix:
     uv run ruff check --fix
 
-# Format Python
+# Format all languages: Python (ruff) + Lua (stylua) + Bash (shfmt).
+# ClaudeConfig-b7x. `just dev-tools` first if stylua/shfmt aren't on PATH.
 fmt:
     uv run ruff format
+    stylua claude/scripts/hooks tests-lua
+    shfmt -w -i 4 -ci sandbox/bin sandbox/scripts
 
-# Check Python formatting without modifying
+# Check formatting without modifying.
 fmt-check:
     uv run ruff format --check
+    stylua --check claude/scripts/hooks tests-lua
+    shfmt -d -i 4 -ci sandbox/bin sandbox/scripts
+
+# Strict-mode Lua static type-checking via lua-language-server (reads
+# .luarc.json). ClaudeConfig-b7x; F-fmt2 retrofits full annotations.
+lua-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(mktemp -d)"
+    trap 'rm -rf "$out"' EXIT
+    lua-language-server --check claude/scripts/hooks --checklevel=Warning --logpath="$out" --configpath="$(pwd)/.luarc.json"
+    diag="$out/check.json"
+    if [ ! -s "$diag" ] || [ "$(jq -r '. | length' "$diag" 2>/dev/null || echo 0)" -eq 0 ]; then
+        echo "(no Lua diagnostics)"
+        exit 0
+    fi
+    cat "$diag"
+    exit 1
 
 # Build wheel + sdist
 build:
@@ -97,8 +123,10 @@ smoke:
 
 # ── Composite quality gate ──
 
-# Run all language quality gates (ruff + mypy + ruff-format + shellcheck + pytest + bats)
-check: lint fmt-check shellcheck test
+# Run all language quality gates (ruff + mypy + ruff-format + stylua-check
+# + shfmt-check + shellcheck + lua-language-server --check + pytest + bats
+# + busted)
+check: lint fmt-check shellcheck lua-check test
 
 # ── Pre-commit hooks (ClaudeConfig-2s3.4) ──
 #
