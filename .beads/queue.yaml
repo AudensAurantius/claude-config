@@ -1,4 +1,5 @@
 cross-cutting:
+- ClaudeConfig-anv
 - ClaudeConfig-754
 - ClaudeConfig-h1z
 - ClaudeConfig-0by
