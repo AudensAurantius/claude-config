@@ -10,49 +10,78 @@
 # Patterns are globs by default. An entry prefixed with `re:` is treated
 # as a Lua regex (handoff §4).
 #
-# Schema (full set; this file populates only the foundation pieces — C2
-# through C7 add the rest):
+# Decision flow (C1–C6, all live as of ClaudeConfig-bi0.9):
+#
+#   1. Tokenize the command; split on `;`, `&&`, `||`, `|`. Bail with
+#      `options.fallback_on_unparseable` (default: ask) if the parser
+#      can't classify a segment.
+#   2. Each git segment is classified:
+#      a. ALWAYS_ASK_REF_REWRITE verbs (`update-ref`, etc.) → ask.
+#      b. New-branch syntax (`checkout -b`, `switch -c`, `branch <new>`):
+#         if the name matches `branch_naming.patterns` → allow;
+#         otherwise apply `branch_naming.on_violation` (ask | deny).
+#      c. Per-verb analyzers (push refspec parsing, branch ops, fetch
+#         loopback) emit a 3-valued decision (allow | ask | defer).
+#      d. `git -C <dir>` and bare-repo flag detection (C5): the global
+#         policy (`options.git_dash_c_policy`; default ask) gates these,
+#         but C6 project-local `allowed_git_dirs` can upgrade ask→allow,
+#         and `options.hard_deny_out_of_allowlist=true` upgrades
+#         ask→deny for out-of-allowlist targets.
+#      e. State-changing verbs on the current branch: if the branch
+#         matches `protected_branches` (resolved via per_repo → global →
+#         origin/HEAD chain) or `ask_branch_patterns` → ask.
+#      f. Anything else gated through C1's generic-gated path.
+#   3. Safe-verb fast-allow (read-only verbs like `status`, `log`,
+#      `diff`) short-circuits in C1 before any of the above.
+#
+# Global schema (this file):
 #
 #   protected_branches:        list of branch names/patterns that require
 #                              permission to write to (push, merge, reset,
-#                              commit on, etc.). The DEFAULT list below
-#                              covers the most common canonical branches;
-#                              per_repo overrides take precedence.
+#                              commit on, etc.). per_repo overrides take
+#                              precedence.
 #
 #   per_repo:                  per-repo overrides. First-match-wins on
-#                              absolute worktree path (decision 2 in the
-#                              handoff). Each entry replaces the default
-#                              `protected_branches` list for matching
-#                              repos.
+#                              absolute worktree path prefix. Each entry
+#                              replaces the default `protected_branches`
+#                              for matching repos.
 #                                - match: <absolute path>
 #                                  protected_branches: [<branch>, …]
 #
 #   ask_branch_patterns:       additional branch patterns that always
-#                              trigger an ask on writes, regardless of
-#                              protected_branches status (e.g. release/*).
-#                              Optional.
+#                              trigger an ask on writes (e.g. release/*).
 #
-#   branch_naming:             new-branch naming convention enforced on
-#                              `git checkout -b` / `switch -c` / `branch
-#                              <new>`. C4 implements; the structure is:
-#                                patterns: [<glob>, …]
+#   branch_naming:             new-branch convention enforced on
+#                              `checkout -b` / `switch -c` / `branch
+#                              <new>`. Match → allow (overrides C1
+#                              generic-gated); miss → on_violation:
+#                                patterns: [<glob-or-re:-prefixed>, …]
 #                                on_violation: ask | deny   (default: ask)
 #
-#   options:                   behavior toggles.
-#                                fallback_on_unparseable: allow | ask | deny
-#                                  Decision when the command parser can't
-#                                  classify (unbalanced quotes, etc.).
-#                                  Default: ask. Never set to "allow" —
-#                                  the hook gates dangerous ops.
-#                                git_dash_c_policy: ask | allow
-#                                  Stance on `git -C <dir>` and bare-repo-
-#                                  class invocations. C5/C6 implement;
-#                                  default: ask.
+#   options:
+#     fallback_on_unparseable:  allow | ask | deny (default: ask).
+#                               Never set to "allow" — the hook gates
+#                               dangerous ops.
+#     git_dash_c_policy:        ask | allow (default: ask). Stance on
+#                               `git -C <dir>` and bare-repo flags.
 #
-# C1 (this bead) sets up the loader and the safe-verb fast-allow; only
-# the `options` block is wired through to runtime today. The rest is
-# documented + populated as defaults so C2 onward can switch decisions
-# on them without re-touching this file's structure.
+# Project-local extensions (only honored in <cwd>/.claude-session/hooks/
+# git-guard.yaml; see C6):
+#
+#   allowed_git_dirs:          list of absolute paths (or `~/`-relative)
+#                              whose `git -C <target>` / `--git-dir=...`
+#                              / `--work-tree=...` invocations are
+#                              upgraded ask→allow. Paths use
+#                              prefix-match with `/` boundary.
+#
+#   options.hard_deny_out_of_allowlist:
+#                              bool (default false). When true, a `git
+#                              -C` invocation whose target falls outside
+#                              `allowed_git_dirs` is upgraded ask→deny
+#                              instead of just asking.
+#
+# Patterns are globs by default. An entry prefixed with `re:` is treated
+# as a Lua regex (handoff §4).
 
 protected_branches:
   - main

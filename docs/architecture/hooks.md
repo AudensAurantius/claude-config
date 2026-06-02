@@ -203,7 +203,7 @@ path via srt's namespace; one location, both modes.
 |---|---|---|---|
 | `config-guard.lua` | PreToolUse | `Write\|Edit\|MultiEdit\|NotebookEdit` | ClaudeConfig-40s.18 |
 | `audit-event.lua` | PreToolUse + PostToolUse (one script, `--event=` selects) | `.*` | ClaudeConfig-40s.19 |
-| `git-guard.lua` | PreToolUse | `Bash` (script fast-bails when no `git` token in the command) | ClaudeConfig-bi0.1 (C1 foundation) + bi0.2 (C2: protected-branch resolution + state-changing-on-protected ask, with per_repo override and origin/HEAD fallback). C3–C9 add ref-rewriting, naming, project-local allowlist, chezmoi wiring. |
+| `git-guard.lua` | PreToolUse | `Bash` (script fast-bails when no `git` token in the command) | C1–C6 live (bi0.1 foundation; bi0.2 protected-branch resolution + per_repo/global/origin-HEAD chain; bi0.3 ref-rewriting always-ask + push refspec parsing; bi0.4 branch-naming on `checkout -b` / `switch -c` / `branch <new>`; bi0.5 `git -C` / bare-repo global ask; bi0.6 project-local `allowed_git_dirs` with `hard_deny_out_of_allowlist` lever). Schema documented inline in `claude/scripts/hooks/git-guard.yaml`. |
 
 ## References
 
