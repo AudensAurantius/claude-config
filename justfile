@@ -72,7 +72,10 @@ fmt-check:
     stylua --check claude/scripts/hooks
     shfmt -d -i 4 -ci sandbox/bin sandbox/scripts
 
-# Strict-mode Lua static type-checking via lua-language-server.
+# Strict-mode Lua static type-checking via lua-language-server, plus
+# the LuaCATS annotation gate (ClaudeConfig-nun / F-fmt2: every public
+# M.* in the hook + lib set must carry a doc-block with at least one
+# `@param`/`@return`/`@class`/`@field`/`@alias`/`@type` tag).
 lua-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -82,10 +85,11 @@ lua-check:
     diag="$out/check.json"
     if [ ! -s "$diag" ] || [ "$(jq -r '. | length' "$diag" 2>/dev/null || echo 0)" -eq 0 ]; then
         echo "(no Lua diagnostics)"
-        exit 0
+    else
+        cat "$diag"
+        exit 1
     fi
-    cat "$diag"
-    exit 1
+    python3 sandbox/scripts/check-lua-annotations.py
 
 # Build wheel + sdist
 build:

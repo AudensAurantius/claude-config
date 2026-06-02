@@ -28,6 +28,37 @@ determined adversary. See handoff doc §8 for the honest framing.
 
 local lib = require("_lib")
 local git = require("_git")
+
+--- @alias git_guard.Decision "allow"|"ask"|"deny"
+--- @alias git_guard.ProtectedSource "per_repo"|"global"|"origin_head"|"none"
+--- @alias git_guard.VerbClass "safe"|"gated"
+
+--- @class git_guard.HookPayload
+--- @field tool_input { command: string? }?
+--- @field cwd string?
+
+--- @class git_guard.PathFlag
+--- @field flag "-C"|"--git-dir"|"--work-tree"
+--- @field target string the path the flag relocated git to
+
+--- @class git_guard.AnalyzerCtx
+--- @field public protected string[] protected branch patterns (the
+---       `public` visibility hint is required because luals would
+---       otherwise parse `@field protected ...` as a visibility
+---       modifier on an anonymous field)
+--- @field ask_patterns string[] additional ask-pattern branch globs
+
+--- @class git_guard.Config
+--- @field protected_branches string[]?
+--- @field per_repo table[]?
+--- @field ask_branch_patterns string[]?
+--- @field branch_naming { patterns: string[]?, on_violation: ("ask"|"deny")? }?
+--- @field options { fallback_on_unparseable: git_guard.Decision?, git_dash_c_policy: ("ask"|"allow")? }?
+
+--- @class git_guard.ProjectConfig
+--- @field allowed_git_dirs string[]?
+--- @field options { hard_deny_out_of_allowlist: boolean? }?
+
 local M = {}
 
 -- Tests can stub the git interface via `stub.new(M._git, "current_branch")`.
@@ -97,10 +128,17 @@ M.DEFAULT_OPTIONS = {
 -- failed (don't retry, just use defaults).
 local _config_cache = nil
 
+--- Reset the in-process config cache. Test-only.
+--- @return nil
 function M._reset_config_cache()
   _config_cache = nil -- for tests
 end
 
+--- Load the global git-guard config. Missing config returns defaults;
+--- parse errors or unavailable lyaml fall back to defaults with a
+--- stderr diagnostic. Result is memoized for the process lifetime.
+--- @param path string? config path; defaults to `$HOME/.claude/hooks/git-guard.yaml`
+--- @return git_guard.Config? config nil only when lyaml/parsing fails
 function M.load_config(path)
   if _config_cache ~= nil then
     return _config_cache or nil
@@ -143,6 +181,10 @@ end
 
 -- ── Cheap fast-path: is there a git invocation anywhere in this command? ──
 
+--- Fast pre-check: does the command contain a `git` token that isn't part
+--- of another identifier (e.g. `agitate`, `git_xxx`)?
+--- @param command string? raw Bash command string
+--- @return boolean
 function M.has_git(command)
   if not command or command == "" then
     return false
@@ -160,6 +202,12 @@ end
 -- double quotes (with backslash escape), and unquoted backslash
 -- escape. Whitespace separates tokens. Returns array on success;
 -- (nil, errmsg) on parse failure (unbalanced quotes).
+--- Tokenize a Bash command string. Honors single quotes (literal),
+--- double quotes (with backslash escape), and unquoted backslash escape.
+--- Whitespace separates tokens.
+--- @param command string?
+--- @return string[]? tokens nil on parse failure
+--- @return string? err error message ("empty", "unbalanced quotes")
 function M.tokenize(command)
   if not command then
     return nil, "empty"
@@ -215,7 +263,10 @@ end
 
 local SHELL_SEPARATORS = { ["&&"] = true, ["||"] = true, [";"] = true, ["|"] = true }
 
--- Split tokens at shell separators into "commands" (each a token list).
+--- Split tokens at shell separators (`&&`, `||`, `;`, `|`) into one
+--- token list per command.
+--- @param tokens string[]
+--- @return string[][] commands
 function M.split_commands(tokens)
   local out = {}
   local cur = {}
@@ -243,6 +294,13 @@ end
 --   git -C <dir> verb …                  (separated flag value)
 --   git --git-dir=… verb …               (joined flag value)
 --   git -c k=v verb …                    (config flag)
+--- Within a single command's token list, find the first git invocation
+--- and return its verb + args (everything after the verb).
+--- Handles env-var prefixes (`NAME=val git ...`) and git-level flags
+--- (`-C <dir>`, `--git-dir=...`, `--work-tree=...`, `-c k=v`).
+--- @param tokens string[]
+--- @return string? verb nil when no git verb is in this command
+--- @return string[]? args everything after the verb
 function M.find_git_verb_in_command(tokens)
   local i = 1
   -- Skip env-var assignments at the start (NAME=value tokens).
@@ -283,6 +341,12 @@ end
 -- Convert a glob (with `*` and `?` wildcards) to an anchored Lua pattern.
 -- Escapes Lua-pattern special characters first; then translates `*`/`?`.
 -- Anchored start+end so a glob like "main" doesn't match "main-fork".
+--- Convert a glob (with `*` and `?` wildcards) to an anchored Lua
+--- pattern. Escapes Lua-pattern special characters first; then
+--- translates `*` → `.*` and `?` → `.`. Anchored start+end so `main`
+--- doesn't match `main-fork`.
+--- @param glob string
+--- @return string lua_pattern anchored Lua pattern
 function M.glob_to_lua_pattern(glob)
   -- TODO(F-lib): migrate to lua-glob-pattern (Debian luarocks-only) for
   -- full glob support (`[abc]`, `[!abc]`, `**`). Today's subset (`*`,
@@ -296,6 +360,11 @@ end
 -- Match a string against a pattern entry. Patterns prefixed with `re:`
 -- are treated as Lua regex (not full PCRE — Lua patterns are simpler);
 -- everything else is treated as a glob.
+--- Match a string against a pattern entry. Entries prefixed with `re:`
+--- are treated as Lua regex (not full PCRE); everything else is a glob.
+--- @param s string? candidate
+--- @param pattern string? pattern entry (glob or `re:`-prefixed)
+--- @return boolean
 function M.match_pattern(s, pattern)
   if type(s) ~= "string" or type(pattern) ~= "string" then
     return false
@@ -316,6 +385,14 @@ end
 -- Returns (patterns, source) where:
 --   patterns: list of branch patterns (globs or `re:`-prefixed regex)
 --   source:   "per_repo" | "global" | "origin_head" | "none"
+--- Resolve protected branches for a given cwd.
+--- Order: `per_repo` (first prefix match on abs path) → global
+--- `protected_branches` → `origin/HEAD` fallback (last resort; handoff
+--- §2 explicitly warns this is unreliable).
+--- @param cwd string absolute path
+--- @param config git_guard.Config?
+--- @return string[] patterns branch globs/`re:`-prefixed regexes
+--- @return git_guard.ProtectedSource source which tier produced the patterns
 function M.resolve_protected_branches(cwd, config)
   config = config or {}
   -- per_repo first (first-match-wins on prefix-match of cwd against
@@ -351,7 +428,10 @@ function M.resolve_protected_branches(cwd, config)
   return {}, "none"
 end
 
--- Check whether a branch name matches any pattern in the list.
+--- True iff `branch` matches any pattern in `patterns`.
+--- @param branch string?
+--- @param patterns string[]?
+--- @return boolean
 function M.branch_matches_any(branch, patterns)
   if not branch or type(patterns) ~= "table" then
     return false
@@ -370,6 +450,11 @@ end
 -- Refspecs: `[+]?<src>[:<dst>]` or `[+]?:<dst>` (delete).
 -- Returns (dst, is_delete). dst is nil if the refspec is malformed.
 -- For `src` with no colon, dst is implicitly src (push src to same name).
+--- Extract the destination ref from a single push refspec.
+--- Refspec grammar: `[+]?<src>[:<dst>]` or `[+]?:<dst>` (delete).
+--- @param spec string?
+--- @return string? dst nil if malformed
+--- @return boolean is_delete true when the refspec has empty `src`
 function M.parse_push_refspec(spec)
   if type(spec) ~= "string" or spec == "" then
     return nil, false
@@ -395,7 +480,15 @@ end
 --              to the C2 current-branch check; the refspecs are
 --              authoritative about what's being modified)
 --   nil     — no explicit refspec, no special flag — defer to C2 default
+--- Analyze a `git push` invocation. Three-valued.
+--- @param args string[]?
+--- @param ctx git_guard.AnalyzerCtx?
+--- @return git_guard.Decision? decision `"ask"` on hit; `"allow"` to
+---         bypass C2's current-branch check when refspecs are explicit;
+---         `nil` to defer
+--- @return string? reason
 function M.analyze_push(args, ctx)
+  args = args or {}
   ctx = ctx or {}
   local protected = ctx.protected or {}
   local ask_patterns = ctx.ask_patterns or {}
@@ -483,9 +576,15 @@ function M.analyze_push(args, ctx)
   return nil, nil
 end
 
--- Analyze a `git branch` invocation. Returns (decision, reason) when a
--- ref-rewrite concern fires; nil otherwise.
+--- Analyze a `git branch` invocation. Returns a decision only when a
+--- ref-rewrite concern fires (force-update, delete-of-protected,
+--- move-touching-protected); nil otherwise.
+--- @param args string[]?
+--- @param ctx git_guard.AnalyzerCtx?
+--- @return git_guard.Decision? decision `"ask"` or nil
+--- @return string? reason
 function M.analyze_branch(args, ctx)
+  args = args or {}
   ctx = ctx or {}
   local protected = ctx.protected or {}
   local ask_patterns = ctx.ask_patterns or {}
@@ -552,6 +651,8 @@ M.ALWAYS_ASK_REF_REWRITE = {
 -- attempted; false = previously failed (use defaults).
 local _project_config_cache = {}
 
+--- Reset the per-cwd project-config cache. Test-only.
+--- @return nil
 function M._reset_project_config_cache()
   _project_config_cache = {}
 end
@@ -560,6 +661,12 @@ end
 -- (preferred, matches our deployment convention) or
 -- `<cwd>/.claude/git-guard.yaml` (handoff's original convention).
 -- Returns the parsed table or nil. Caches per cwd.
+--- Load project-local config from `<cwd>/.claude-session/hooks/
+--- git-guard.yaml` (preferred) or `<cwd>/.claude/git-guard.yaml`
+--- (handoff's original convention). Caches per cwd; returns nil when
+--- no candidate is readable or parsing fails.
+--- @param cwd string?
+--- @return git_guard.ProjectConfig?
 function M.load_project_config(cwd)
   if type(cwd) ~= "string" or cwd == "" then
     return nil
@@ -608,8 +715,11 @@ function M.load_project_config(cwd)
   return parsed
 end
 
--- Resolve a path entry to an absolute, normalized form. Relative entries
--- are resolved against `base_cwd`.
+--- Resolve a path entry to an absolute, normalized form. Relative
+--- entries are joined onto `base_cwd` before normalization.
+--- @param entry string? path entry (absolute or cwd-relative)
+--- @param base_cwd string? required when `entry` is relative
+--- @return string? absolute_normalized
 function M.resolve_path(entry, base_cwd)
   if type(entry) ~= "string" or entry == "" then
     return nil
@@ -631,6 +741,13 @@ end
 --   - prefix match with `/` boundary (entry "/repo" matches "/repo" or
 --     "/repo/sub", NOT "/repo-fork")
 --   - glob match (via M.match_pattern on the post-normalize string)
+--- Check whether `target` (passed to git -C / --git-dir / --work-tree)
+--- is covered by `allowed_entries`. Supports exact match, prefix match
+--- with `/` boundary, and glob match (via `match_pattern`).
+--- @param target string?
+--- @param allowed_entries string[]?
+--- @param cwd string? base for relative-path resolution
+--- @return boolean
 function M.target_in_allowed_dirs(target, allowed_entries, cwd)
   if not target or type(allowed_entries) ~= "table" then
     return false
@@ -668,6 +785,11 @@ end
 -- Walks from the start of the command: skips env-var prefixes,
 -- expects `git` next, then collects path flags until the verb (first
 -- non-flag positional).
+--- Scan a single command's tokens for git-path-redirection flags
+--- (`-C`, `--git-dir[=...]`, `--work-tree[=...]`). Each flag use
+--- produces one record; multiple in one invocation is valid.
+--- @param tokens string[]?
+--- @return git_guard.PathFlag[] flags empty when none detected
 function M.detect_git_path_flags(tokens)
   local results = {}
   if type(tokens) ~= "table" or #tokens == 0 then
@@ -732,6 +854,12 @@ end
 --   git switch   -c NAME [start]
 --   git switch   -C NAME [start]
 --   git branch    NAME [start]      (bare; no -d/-D/-f/--list/etc.)
+--- Extract the new branch name being created by a given verb+args, if
+--- any. Detects `checkout -b/-B`, `switch -c/-C`, and bare `branch
+--- <name>` (without destructive flags).
+--- @param verb string?
+--- @param args string[]?
+--- @return string? name
 function M.new_branch_name(verb, args)
   if not args then
     return nil
@@ -790,6 +918,15 @@ end
 --   "ask" / "deny" — name violates the configured patterns (per
 --             branch_naming.on_violation; default ask).
 --   nil — naming unconfigured / not a create-form (defer).
+--- Check a new-branch name against `branch_naming.patterns`.
+--- @param verb string?
+--- @param args string[]?
+--- @param cfg git_guard.Config?
+--- @return git_guard.Decision? decision `"allow"` on conforming match
+---         (overrides C1 generic-gated); `"ask"` or `"deny"` per
+---         `branch_naming.on_violation`; `nil` when unconfigured /
+---         not a create-form
+--- @return string? reason
 function M.analyze_new_branch_name(verb, args, cfg)
   local name = M.new_branch_name(verb, args)
   if not name then
@@ -822,6 +959,13 @@ end
 
 -- ── Verb classification ──
 
+--- Classify a verb as `"safe"` (fast-allow) or `"gated"` (further
+--- analysis required). Honors `SAFE_VERBS` for unconditional fast-allow
+--- and `SAFE_SUBFORMS` for verbs whose listed subflags flip them to
+--- safe.
+--- @param verb string
+--- @param args string[]?
+--- @return git_guard.VerbClass
 function M.classify_verb(verb, args)
   if M.SAFE_VERBS[verb] then
     return "safe"
@@ -839,6 +983,14 @@ end
 
 -- ── Decision ──
 
+--- Pure decision function. Takes the parsed PreToolUse payload and
+--- returns `(decision, reason)`. Walks every separator-delimited git
+--- invocation in the compound command; the most-restrictive outcome
+--- wins. See the file header and `git-guard.yaml` for the full
+--- precedence rules (C1–C6).
+--- @param data git_guard.HookPayload?
+--- @return git_guard.Decision decision
+--- @return string reason
 function M.decide(data)
   local input = data and data.tool_input
   local command = (type(input) == "table") and input.command or nil
@@ -864,12 +1016,20 @@ function M.decide(data)
   local commands = M.split_commands(tokens)
   local cwd = (type(data) == "table" and type(data.cwd) == "string") and data.cwd or nil
   local any_git, last_verb = false, nil
-  local protected_hit, generic_gated = nil, false
+  --- @type table?
+  local protected_hit = nil
+  --- @type string|false
+  local generic_gated = false
 
   -- Lazy-resolved per-decide-call: only compute current-branch + protected
   -- list when we actually see a STATE_CHANGING verb. Caches for the
   -- compound walk so we don't shell out to git twice.
-  local cfg_cache, branch_cache, patterns_cache
+  --- @type git_guard.Config?
+  local cfg_cache
+  --- @type string|false|nil
+  local branch_cache
+  --- @type string[]?
+  local patterns_cache
   local function get_config()
     if cfg_cache == nil then
       cfg_cache = M.load_config() or {}
@@ -1074,6 +1234,10 @@ function M.decide(data)
   return "allow", "git-guard: all git verbs safe (last: " .. last_verb .. ")"
 end
 
+--- I/O driver. Reads one JSON document from stdin, runs `decide()`,
+--- journals on ask/deny, and emits the Claude Code hook output payload.
+--- Always returns 0.
+--- @return integer exit_code always 0
 function M.main()
   local cjson = require("cjson")
   local raw = io.read("*all") or ""

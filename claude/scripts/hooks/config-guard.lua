@@ -20,8 +20,22 @@ deny.
 ]]
 
 local lib = require("_lib")
+
+--- @alias config_guard.Decision "allow"|"deny"
+--- @alias config_guard.WriteToolName "Write"|"Edit"|"MultiEdit"|"NotebookEdit"
+
+--- @class config_guard.ToolInput
+--- @field file_path string? path the write tool is targeting
+
+--- @class config_guard.HookPayload
+--- @field tool_name string?
+--- @field tool_input config_guard.ToolInput?
+
 local M = {}
 
+--- @type table<string, boolean>
+--- The write-class tools whose target paths the hook inspects. Any tool
+--- not in this set is allowed unconditionally.
 M.WRITE_TOOLS = { Write = true, Edit = true, MultiEdit = true, NotebookEdit = true }
 
 local PROTECTED_PATHS = {
@@ -39,24 +53,34 @@ local PROTECTED_PREFIXES = {
 
 M.HOME = lib.HOME
 
--- Exposed for tests; thin wrappers over the lib's generic helpers
--- with this hook's specific path tables baked in.
+--- Thin wrapper over `lib.normalize_path` for test discoverability.
+--- @param path string?
+--- @return string?
 function M.normalize(path)
   return lib.normalize_path(path)
 end
+
+--- True iff `path`, after normalization, matches one of the protected
+--- exact files or sits under a protected prefix.
+--- @param path string
+--- @return boolean
 function M.is_protected(path)
   return lib.match_paths(path, PROTECTED_PATHS, PROTECTED_PREFIXES)
 end
 
--- Pure decision function: takes the parsed PreToolUse payload and
--- returns (decision, reason). No I/O — directly testable.
+--- Pure decision function. Takes the parsed PreToolUse payload and
+--- returns `(decision, reason)`. No I/O — directly testable.
+--- @param data config_guard.HookPayload?
+--- @return config_guard.Decision decision
+--- @return string reason
 function M.decide(data)
   local tool = data and data.tool_name or ""
   if not M.WRITE_TOOLS[tool] then
     return "allow", "config-guard: not a write-class tool"
   end
-  local input = data.tool_input
-  local path = (type(input) == "table") and input.file_path or ""
+  local input = data and data.tool_input
+  --- @type string
+  local path = ((type(input) == "table") and input and input.file_path) or ""
   if M.is_protected(path) then
     local reason = string.format(
       "config-guard: blocked %s to deployed Claude config '%s'. "
@@ -70,6 +94,10 @@ function M.decide(data)
   return "allow", "config-guard: not a protected config path"
 end
 
+--- I/O driver: reads one JSON document from stdin, runs `decide()`,
+--- journals on deny, and emits the Claude Code hook output payload.
+--- Always returns 0 (fail-open on parse error).
+--- @return integer exit_code always 0
 function M.main()
   local cjson = require("cjson")
   local raw = io.read("*all") or ""

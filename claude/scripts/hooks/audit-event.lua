@@ -20,18 +20,44 @@ PostToolUse input: {session_id, tool_name, tool_input, tool_response, cwd}
 ]]
 
 local lib = require("_lib")
+
+--- @alias audit_event.Event "PreToolUse"|"PostToolUse"|"Unknown"
+
+--- @class audit_event.HookPayload
+--- @field session_id string?
+--- @field tool_name string?
+--- @field tool_input table?
+--- @field tool_response table?
+--- @field cwd string?
+
+--- @class audit_event.Record
+--- @field ts string ISO8601 timestamp
+--- @field event audit_event.Event
+--- @field session_id string?
+--- @field tool_name string?
+--- @field tool_input table?
+--- @field tool_response table?
+--- @field cwd string?
+
 local M = {}
 
+--- @type string
 M.HOME = lib.HOME
 
--- Override hook for tests (point at tmp dir); production reads from
--- claude-session's HOME-relative cache.
+--- Returns the root directory for per-session JSONL audit logs.
+--- Overridable in tests; production reads claude-session's
+--- `$HOME`-relative cache.
+--- @return string cache_root absolute path
 function M.cache_root()
   return lib.HOME .. "/.cache/claude-config"
 end
 
--- Build the structured payload from the parsed input + event tag.
--- Pure function; directly testable.
+--- Build the structured audit record from the parsed input + event tag.
+--- Pure function; no I/O.
+--- @param event audit_event.Event the event tag (`PreToolUse` etc.)
+--- @param data audit_event.HookPayload? parsed hook payload
+--- @param now string? override timestamp (test-only)
+--- @return audit_event.Record record
 function M.build_record(event, data, now)
   return {
     ts = now or lib.now_iso(),
@@ -44,8 +70,10 @@ function M.build_record(event, data, now)
   }
 end
 
--- Compose the one-line journald summary. Compact JSON for downstream
--- parseability (40s.21 / OTEL Collector consumes the same shape).
+--- Compose the one-line journald summary as compact JSON. Downstream
+--- consumers (40s.21 / OTEL Collector) parse the same shape.
+--- @param record audit_event.Record
+--- @return string json_line a single-line JSON document
 function M.journal_line(record)
   local cjson = require("cjson")
   return cjson.encode({
@@ -56,6 +84,12 @@ function M.journal_line(record)
   })
 end
 
+--- I/O driver. Reads one JSON document from stdin, builds the record,
+--- emits one journald line + one JSONL append, then writes the Claude
+--- Code hook output payload (allow for PreToolUse; bare event ack for
+--- PostToolUse). Always returns 0.
+--- @param argv string[] argument vector; expects `--event=<name>`
+--- @return integer exit_code always 0
 function M.main(argv)
   local cjson = require("cjson")
   local flags = lib.parse_kv_args(argv)

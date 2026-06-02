@@ -26,12 +26,26 @@ Functions:
 
 local cjson = require("cjson")
 
+--- @alias _lib.JournalPriority "emerg"|"alert"|"crit"|"err"|"warning"|"notice"|"info"|"debug"
+--- The systemd-cat priority levels accepted by `journal()`. We use only a
+--- handful in practice (`info`, `warning`, `err`).
+
 local M = {}
 
+--- @type string
+--- `$HOME` at chunk-load time. Captured once so subsequent `os.getenv`
+--- mutations (e.g. tests that swap HOME after load) don't affect the
+--- cached value. Tests reset by clearing `package.loaded["_lib"]` before
+--- re-`require`-ing.
 M.HOME = os.getenv("HOME") or "/"
 
 -- ── Time ────────────────────────────────────────────────────────────
 
+--- RFC3339-ish UTC timestamp with millisecond precision.
+--- Best-effort: Lua stdlib only exposes second granularity on `os.time`;
+--- we approximate ms via `os.clock() % 1`. Sufficient for ordering audit
+--- records that arrive >1 ms apart.
+--- @return string iso8601 e.g. "2026-06-01T19:30:00.123Z"
 function M.now_iso()
   -- Best-effort millisecond precision: Lua stdlib clock is seconds;
   -- os.clock() gives fractional CPU seconds since process start as
@@ -44,10 +58,15 @@ end
 
 -- ── Paths ───────────────────────────────────────────────────────────
 
--- Expand `~`, collapse `..`/`.`, dedupe slashes. No symlink
--- resolution (Lua lacks a stdlib realpath; symlink-escape requires
--- write access the OS-layer bind already blocks in our threat model).
--- Returns nil for empty / nil / unclassifiable-relative paths.
+--- Pure-Lua realpath-lite. Expands `~`, collapses `..`/`.`, dedupes
+--- slashes. No symlink resolution (Lua lacks a stdlib realpath;
+--- symlink-escape requires write access that the OS-layer bind already
+--- blocks in our threat model).
+--- @param path string? input path; may be `~`/`~/...`-prefixed
+--- @param home_override string? overrides `M.HOME` for `~` expansion
+---        (test-only)
+--- @return string? absolute_normalized nil for empty / nil /
+---         unclassifiable-relative inputs
 function M.normalize_path(path, home_override)
   if not path or path == "" then
     return nil
@@ -73,10 +92,13 @@ function M.normalize_path(path, home_override)
   return "/" .. table.concat(parts, "/")
 end
 
--- Returns true iff the normalized path matches any entry in
--- `exact_paths` (equality) or sits under any entry in `prefixes`
--- (string-prefix with `/` boundary, so `/foo` does NOT match
--- `/foo-bar`). All inputs are normalized internally.
+--- Path-membership test against an exact set + prefix set.
+--- Normalizes everything internally; the `/` boundary on prefixes
+--- means `/foo` does NOT match `/foo-bar`.
+--- @param path string the candidate path
+--- @param exact_paths string[]? paths to compare for exact equality
+--- @param prefixes string[]? path prefixes (matched with `/` boundary)
+--- @return boolean matched true on any hit
 function M.match_paths(path, exact_paths, prefixes)
   local p = M.normalize_path(path)
   if not p then
@@ -98,9 +120,11 @@ end
 
 -- ── Arg parsing ────────────────────────────────────────────────────
 
--- Extract `--key=value` flags from argv into a {[key]=value} table.
--- Ignores positional args + bare flags. Sufficient for hook entry
--- points; not a full argparse.
+--- Extract `--key=value` flags from argv into a flat table.
+--- Ignores positional args + bare flags. Sufficient for hook entry
+--- points; not a full argparse.
+--- @param argv string[]? argument vector (e.g. Lua's global `arg`)
+--- @return table<string,string> kv flag-name → string value
 function M.parse_kv_args(argv)
   local out = {}
   for _, a in ipairs(argv or {}) do
@@ -114,9 +138,13 @@ end
 
 -- ── Output ──────────────────────────────────────────────────────────
 
--- Send `line` to journald via systemd-cat with the given tag +
--- priority. Falls back to stderr on systems without systemd-cat.
--- Never fatal.
+--- Send a single line to journald via `systemd-cat` with the given tag
+--- and priority. Falls back to stderr on systems without systemd-cat.
+--- Never fatal.
+--- @param tag string syslog tag (typically the hook name)
+--- @param priority _lib.JournalPriority systemd-cat priority level
+--- @param line string the log payload (no trailing newline needed)
+--- @return boolean ok true iff `systemd-cat` accepted the line
 function M.journal(tag, priority, line)
   local cmd = string.format("systemd-cat -t %q -p %q 2>/dev/null", tag, priority)
   local p = io.popen(cmd, "w")
@@ -131,19 +159,24 @@ function M.journal(tag, priority, line)
   return false
 end
 
--- Write a Claude Code hook output payload (a `hookSpecificOutput`-
--- shaped table) as one line of JSON on stdout.
+--- Write a Claude Code hook output payload (a `hookSpecificOutput`-
+--- shaped table) as one line of JSON on stdout. The Claude Code runtime
+--- consumes one JSON document per line.
+--- @param payload table any JSON-encodable hook output
 function M.emit_hook_output(payload)
   io.stdout:write(cjson.encode(payload))
   io.stdout:write("\n")
 end
 
--- Append one JSONL line (cjson.encode(record) + newline) to
--- `<dir>/tool-calls.jsonl`, creating `<dir>` if it doesn't exist.
--- Refuses if `dir` contains characters outside [A-Za-z0-9_.\-/] —
--- guards against shell-injection through hook-input fields like
--- session_id (which is opaque from our standpoint).
--- Returns true on success, false (with stderr diagnostic) otherwise.
+--- Append one JSONL line (cjson.encode(record) + newline) to
+--- `<dir>/tool-calls.jsonl`, creating `<dir>` if it doesn't exist.
+--- Refuses if `dir` contains characters outside `[A-Za-z0-9_.\-/]` —
+--- guards against shell-injection through hook-input fields like
+--- session_id (opaque from our standpoint).
+--- @param dir string target directory; created with `mkdir -p` if absent
+--- @param record table any JSON-encodable record
+--- @return boolean ok true on success, false (with stderr diagnostic)
+---         otherwise
 function M.append_jsonl(dir, record)
   if not dir or dir == "" then
     return false
@@ -166,11 +199,15 @@ end
 
 -- ── Runner guard ───────────────────────────────────────────────────
 
--- True iff the running script was invoked directly as `<basename>`
--- (vs being loaded via dofile/require from a test runner). The
--- canonical pattern in each hook entry point:
---     if lib.is_main("my-hook.lua") then os.exit(M.main(arg)) end
---     return M
+--- Runner-vs-library guard. True iff the script was invoked directly
+--- as `<basename>` (vs being loaded via `dofile`/`require` from a test
+--- runner). The canonical pattern in each hook entry point:
+---
+---     if lib.is_main("my-hook.lua") then os.exit(M.main(arg)) end
+---     return M
+---
+--- @param basename string the hook's filename (matched with end-of-string)
+--- @return boolean is_main
 function M.is_main(basename)
   if not (arg and arg[0]) then
     return false
