@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# pre-push — claude-config-shipped git hook (ClaudeConfig-dsm / F-git1).
+#
+# Stub: emits a stderr trace line and exits 0. Real decision logic
+# lands with ClaudeConfig-bi0.3 (refspec parsing + ref-rewriting
+# always-ask denylist).
+#
+# pre-push input contract: stdin lines of the form
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+# We don't act on it yet (just trace + allow).
+set -euo pipefail
+
+remote="${1:-?}"
+url="${2:-?}"
+
+msg="claude-config pre-push (stub): hook fired, remote=$remote url=$url cwd=$(pwd)"
+
+if command -v systemd-cat >/dev/null 2>&1; then
+    printf '%s\n' "$msg" | systemd-cat -t claude-config-git-guard -p info 2>/dev/null || true
+else
+    printf '%s\n' "$msg" >&2
+fi
+
+# Drain stdin (git sends refspec info we currently ignore) so git
+# doesn't see a closed pipe early.
+cat >/dev/null || true
+
+exit 0

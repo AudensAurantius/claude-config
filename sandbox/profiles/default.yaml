@@ -113,6 +113,10 @@ sandbox_home:
   # Per-session audit JSONL (40s.19). claude-session-owned; bound rw
   # so audit-event.lua can append.
   - { source: "${SANDBOX_HOME}/.cache/claude-config",      target: "${SANDBOX_HOME}/.cache/claude-config",          mode: rw }
+  # claude-config-shipped git hooks (ClaudeConfig-dsm / F-git1).
+  # Mirrored from ${SHARE_DIR}/git-hooks by assemble_claude_dir.
+  # claude-session's global gitconfig sets core.hooksPath here.
+  - { source: "${SANDBOX_HOME}/.config/git/hooks",         target: "${SANDBOX_HOME}/.config/git/hooks",             mode: ro }
 
 # Worktree policy. Phase 1 uses the canonical project path directly.
 # Phase 3 changes this to "auto-create" (per-session worktree on a

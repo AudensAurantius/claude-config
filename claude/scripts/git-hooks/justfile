@@ -1,0 +1,52 @@
+# claude/scripts/git-hooks/justfile — claude-config-shipped git hooks
+# (ClaudeConfig-dsm / F-git1). Imported flat into the root justfile.
+#
+# Installed to ${SHARE_DIR}/git-hooks/ on the host; mirrored into
+# claude-session's /home/claude-session/.config/git/hooks/ by the
+# wrapper's assemble_claude_dir at session boot. claude-session's
+# global git config sets core.hooksPath to that mirror dir, so these
+# hooks fire on every git invocation as claude-session — defense-in-
+# depth alongside the Claude PreToolUse git-guard.lua hook.
+
+# Install claude-config-shipped git hooks.
+install-git-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    install -d -m 0755 "{{share_dir}}/git-hooks"
+    install -m 0755 claude/scripts/git-hooks/pre-commit "{{share_dir}}/git-hooks/pre-commit"
+    install -m 0755 claude/scripts/git-hooks/pre-push   "{{share_dir}}/git-hooks/pre-push"
+    echo "✓ git-hooks installed:"
+    echo "    {{share_dir}}/git-hooks/{pre-commit,pre-push}"
+
+# Reverse install-git-hooks.
+uninstall-git-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    declare -a paths=(
+        "{{share_dir}}/git-hooks/pre-commit"
+        "{{share_dir}}/git-hooks/pre-push"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  rm $f"
+            rm -f "$f"
+        fi
+    done
+    echo "✓ git-hooks uninstalled"
+
+# Verify installed git hooks.
+verify-git-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Verifying git-hooks install ..."
+    declare -a paths=(
+        "{{share_dir}}/git-hooks/pre-commit"
+        "{{share_dir}}/git-hooks/pre-push"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  ✓ present: $f"
+        else
+            echo "  ✗ MISSING: $f"
+        fi
+    done

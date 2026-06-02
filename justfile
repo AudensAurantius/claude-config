@@ -33,6 +33,7 @@ etc_dir     := env_var_or_default("ETC_DIR",     "/etc/claude-code")
 
 import 'sandbox/justfile'
 import 'claude/scripts/hooks/justfile'
+import 'claude/scripts/git-hooks/justfile'
 
 # ── Default: show the recipe catalog ──
 
@@ -132,7 +133,7 @@ pre-commit-run:
 # ── Top-level install / uninstall / verify (delegate to per-domain) ──
 
 # Install all domains to the configured host paths
-install: install-sandbox install-hooks
+install: install-sandbox install-hooks install-git-hooks
     @echo ""
     @echo "✓ claude-config installed."
     @echo ""
@@ -141,7 +142,7 @@ install: install-sandbox install-hooks
     @echo "  2. claude-sandbox --oauth   — one-time Anthropic OAuth bootstrap"
 
 # Reverse `just install` (does NOT unprovision)
-uninstall: uninstall-sandbox uninstall-hooks
+uninstall: uninstall-sandbox uninstall-hooks uninstall-git-hooks
     @echo "✓ claude-config uninstalled. (Empty parent dirs not removed.)"
 
 # Test install to /tmp/claude-sandbox-test (non-destructive).
@@ -155,4 +156,4 @@ install-test:
     @echo "  find /tmp/claude-sandbox-test -type f"
 
 # Verify all installed files across domains
-verify: verify-sandbox verify-hooks
+verify: verify-sandbox verify-hooks verify-git-hooks

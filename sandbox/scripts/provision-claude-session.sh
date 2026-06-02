@@ -369,6 +369,36 @@ LUASETUP
         echo "    Install with: apt-get install perl-base" >&2
     fi
 
+    # 9. claude-session git identity + core.hooksPath (ClaudeConfig-dsm /
+    #    F-git1). claude-session needs its own git config so commits
+    #    inside the sandbox carry an attributable author (not hactar's
+    #    identity from project-local .git/config). core.hooksPath
+    #    redirects to claude-config-shipped hooks (assembled into
+    #    ~/.config/git/hooks at session boot); project pre-commit/pre-
+    #    push hooks are excluded by default (F-git3 sidecar opt-in
+    #    chains them in per-project).
+    #
+    #    Override via env vars: CLAUDE_SESSION_GIT_USER_NAME,
+    #    CLAUDE_SESSION_GIT_USER_EMAIL.
+    local git_user_name git_user_email
+    git_user_name="${CLAUDE_SESSION_GIT_USER_NAME:-claude-session}"
+    git_user_email="${CLAUDE_SESSION_GIT_USER_EMAIL:-claude-session@$(hostname)}"
+    echo "→ provisioning claude-session git identity (${git_user_name} <${git_user_email}>) + core.hooksPath ..."
+    if sudo -u "$claude_user" -H bash -s -- "$git_user_name" "$git_user_email" <<'GITCONFIG'; then
+set -euo pipefail
+name="$1"; email="$2"
+mkdir -p "$HOME/.config/git/hooks"
+git config --global user.name "$name"
+git config --global user.email "$email"
+git config --global init.defaultBranch main
+git config --global commit.gpgsign false
+git config --global core.hooksPath "$HOME/.config/git/hooks"
+GITCONFIG
+        echo "  ✓ git identity set; core.hooksPath = ${claude_home}/.config/git/hooks"
+    else
+        echo "  ! git config write failed" >&2
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""

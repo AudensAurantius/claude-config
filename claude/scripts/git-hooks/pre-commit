@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# pre-commit — claude-config-shipped git hook (ClaudeConfig-dsm / F-git1).
+#
+# Stub: emits a stderr trace line and exits 0. Real decision logic
+# lands when ClaudeConfig-bi0.2's git-guard `decide()` is extracted
+# into a callable CLI (or via a thin wrapper that loads the Lua
+# library directly). At that point this stub becomes:
+#
+#   exec git-guard-check pre-commit "$@"
+#
+# Today's behavior: log the invocation to journald (via systemd-cat
+# when available; stderr fallback otherwise) so audit trails show
+# the hook fired, then allow the commit. Defense-in-depth with the
+# Claude PreToolUse git-guard hook (which fires at command-formation
+# time before bash runs the commit).
+set -euo pipefail
+
+msg="claude-config pre-commit (stub): hook fired in $(pwd); cwd-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+
+if command -v systemd-cat >/dev/null 2>&1; then
+    printf '%s\n' "$msg" | systemd-cat -t claude-config-git-guard -p info 2>/dev/null || true
+else
+    printf '%s\n' "$msg" >&2
+fi
+
+exit 0

@@ -97,6 +97,18 @@ else
     SHARE_HOOK_DIR=""
 fi
 
+# Git-hooks directory (ClaudeConfig-dsm / F-git1). Mirrored into
+# /home/claude-session/.config/git/hooks/ by assemble_claude_dir so
+# claude-session's core.hooksPath redirects to the claude-config-
+# shipped hooks. Same installed/repo dual-resolution as SHARE_HOOK_DIR.
+if [ -d "$SELF_DIR/../share/claude-sandbox/git-hooks" ]; then
+    SHARE_GIT_HOOKS_DIR="$(readlink -f "$SELF_DIR/../share/claude-sandbox/git-hooks")"
+elif [ -d "$SELF_DIR/../../claude/scripts/git-hooks" ]; then
+    SHARE_GIT_HOOKS_DIR="$(readlink -f "$SELF_DIR/../../claude/scripts/git-hooks")"
+else
+    SHARE_GIT_HOOKS_DIR=""
+fi
+
 # Per-project ACL granter (ClaudeConfig-40s.15.9). Resolve across the
 # installed layout ($PREFIX/share/claude-sandbox/scripts) and the repo layout
 # (sandbox/scripts); CLAUDE_SANDBOX_ACL_SCRIPT overrides.
@@ -161,6 +173,17 @@ assemble_claude_dir() {
     # audit-event.lua creates per-session subdirs inside this on demand.
     sudo -u "$SANDBOX_USER" -H bash -c 'mkdir -p "$HOME/.cache/claude-config"' ||
         echo "claude-sandbox: warning — failed to pre-create audit cache dir for $SANDBOX_USER" >&2
+    # Mirror claude-config-shipped git hooks into claude-session's
+    # ~/.config/git/hooks/ (ClaudeConfig-dsm / F-git1). Standalone bwrap
+    # binds that path ro via sandbox_home; composed mode reads it
+    # directly through srt's namespace. claude-session's gitconfig sets
+    # core.hooksPath there (provisioned by provision-claude-session.sh).
+    if [ -n "${SHARE_GIT_HOOKS_DIR:-}" ] && [ -d "$SHARE_GIT_HOOKS_DIR" ]; then
+        sudo -u "$SANDBOX_USER" -H bash -c \
+            'mkdir -p "$HOME/.config/git/hooks" && rsync -a --delete "$1/" "$HOME/.config/git/hooks/"' \
+            _ "$SHARE_GIT_HOOKS_DIR" ||
+            echo "claude-sandbox: warning — failed to mirror git-hooks to $SANDBOX_USER" >&2
+    fi
     # claude-session-scoped Claude Code permission deny rules (40s.16 re-home):
     # app-layer matcher where **/.env etc. DO work; scoped to claude-session so
     # the host user's interactive sessions are unaffected. PLUS the canonical
