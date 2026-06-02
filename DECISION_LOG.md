@@ -1568,6 +1568,14 @@ setup), Nix (bit-reproducible).
 - Design happens now (DEC + schema); implementation lands when the
   immediate Phase 1 chain settles.
 
+**Partially superseded by DEC-027 (2026-06-02):** the config location
+moved from `<project>/.claude-session/sidecar.yaml` to
+`<project>/.claude/claude-session/config.yaml`, the "mode" framing
+(declarative/script/Nix) was dropped in favor of config-shape-as-mode,
+and per-hook project configs (bi0.6's git-guard project file) fold
+into the unified surface. The per-project venv design and Nix support
+remain valid as schema requirements.
+
 ---
 
 ### DEC-024: Cue as schema/validation layer; YAML as runtime config format (2026-05-27)
@@ -1606,6 +1614,12 @@ without the runtime cost.
   YAML configs.
 - Hooks (in Lua/Python/etc.) still read YAML at runtime; no behavior
   change to the hot path.
+
+**Clarified by DEC-027 (2026-06-02):** runtime authoring accepts
+YAML | JSON | Cue (all three); Cue remains canonical for schema.
+JSON support is essentially free (Cue and YAML both parse it); making
+it explicit allows tooling/IDE pipelines that already emit JSON
+configs to participate without conversion.
 
 ---
 
@@ -1646,3 +1660,203 @@ swarm on a single machine.
   subuid+bwrap is the model.
 - The Firecracker comparison stays in
   `docs/specs/phase6-worker-isolation.md` as a deferred alternative.
+
+---
+
+### DEC-026: Four-category task-runner taxonomy — just for A+B, mise for D, agnostic for C (2026-06-02)
+
+**Decision:** Runnable tasks in claude-config's universe split into
+four categories along two axes: (1) dev/build/management vs.
+session-scaffolding, (2) host-user-env vs. claude-session-env.
+
+| | dev/build/management | session-scaffolding |
+|---|---|---|
+| host-user-env | **A** (claude-config lint/test/fmt/build) | — |
+| host-user-env | **B** (claude-config install/uninstall/provision) | — |
+| project-owner env | **C** (user's project-local dev tasks) | — |
+| claude-session env (bind-mounted view) | — | **D** (env, tools, hooks, project-specific setup/teardown) |
+
+- **A & B**: `just` (DEC-021). No change.
+- **C**: project owner chooses (mise/just/make/Taskfile/devbox/Nix/npm —
+  claude-config takes no stance).
+- **D**: `mise` — but as a coordinator implementation detail, not a
+  recommendation to the user's project. mise installed into
+  claude-session's home (DEC-016); coordinator generates mise config in
+  the bind-mounted worktree at session boot.
+
+**Context:** Prior design discussion conflated A/B/D when asking
+"what runner should `setup.steps:` use?" Treating just as a candidate
+imported A/B dev-tooling into the D session-scaffolding layer. The
+four-category split surfaces that the question wasn't really about
+runner choice — it was about identifying the owner of D. mise emerges
+naturally there because mise is built around "declarative env + tools
++ hooks per directory" — exactly D's shape.
+
+**Alternatives considered:**
+
+- *Use just for D too.* Conflates layers; pulls A/B logic into
+  session-scaffolding. Rejected.
+- *Build a bespoke D runner.* mise already solves env+tools+hooks; no
+  reason to reinvent.
+- *Adopt mise everywhere (including A/B).* Bigger change; just is
+  already established (DEC-021); mise's task ergonomics are weaker
+  than just's. Rejected.
+
+**Consequences:**
+
+- mise becomes a provisioned dependency for claude-session (extends
+  DEC-016's "claude-session owns its own tools" list).
+- ClaudeConfig-2s3.5 (pipx/uv-tool-install for claude-session) is
+  largely obsoleted — mise can install pipx-managed tools.
+- The four-category taxonomy is a reference framework for future
+  design discussions; bd memories
+  `sidecar-four-category-taxonomy` and
+  `sidecar-just-vs-mise-roles` carry the operational version.
+
+**Revision possible:** if the external bd-timew merge decision lands
+differently than anticipated, the C→D exposure surface in DEC-027 may
+need adjustment.
+
+---
+
+### DEC-027: Sidecar config location, shape, and step execution model (2026-06-02)
+
+**Decision:** Per-project sidecar config lives at
+`<project>/.claude/claude-session/config.yaml` (nested dir so custom
+scripts/templates can coexist with the config file). All keys
+camelCase (ADO precedent; matches `continueOnError`). Authoring
+format: YAML | JSON | Cue all accepted; Cue is canonical for schema
+(extends DEC-024).
+
+Sections: `env`, `tools` (mise-shaped), `git`, `hooks` (Claude Code
+hook implementations like `gitGuard`), `shellHooks` (per-Bash-call
+hooks; see DEC-028), `exposeUserMise` (Category C → D
+section-level allowlist), `beads` (claude-session-specific deviations
+from project bd config; schema TBD pending external bd-timew merge
+decision), `setup` (declarative env/tools/git + procedural `steps`),
+`teardown` (narrow declarative whitelist: `beads` + `git` + optional
+`steps`).
+
+**Step shape:** `name` (required), `context: host | sandbox` (default
+sandbox), `continueOnError: bool` (default false), `env: { … }`
+per-step overrides, `dir: …` optional working directory
+(relative → project root, absolute → tempfs/bwrap root). Exactly one
+of `script:` (inline shell) | `run:` (file path + args, single
+GHA-style string) | `task:` (mise task name; requires
+`exposeUserMise.tasks: true`).
+
+**Execution:**
+
+- Sandbox-context steps run as claude-session, in the bind-mounted
+  worktree, wrapped with `mise exec --` for env+tool hygiene.
+- Host-context steps run as the host user against the canonical
+  project tree — before bind-mount (setup) or after teardown.
+- Wrapper itself is the runner (~20 lines of shell). No DAG, no
+  caching — session-init/teardown are linear.
+
+**Hook-config consolidation:** the prior
+`<project>/.claude-session/hooks/git-guard.yaml` (bi0.6) folds into
+this config as the `hooks.gitGuard.*` section. Migration: update
+`git-guard.lua`'s `load_project_config()` to read the new path + key
+name; one-time breaking change.
+
+**Context:** DEC-023 designated `<project>/.claude-session/sidecar.yaml`
+with three "modes" (declarative, script, Nix). The revised design
+(a) reuses the existing `<project>/.claude/` directory rather than
+adding a sibling `<project>/.claude-session/` dir, (b) eliminates the
+explicit `mode` discriminator — the config shape IS the mode (presence
+of `steps:` = mode-mixing without ceremony), (c) consolidates per-hook
+project configs into the unified surface.
+
+**Alternatives considered:**
+
+- *Keep `<project>/.claude-session/`.* Two `.claude-*` dirs at project
+  root is noisier than reusing one. Rejected.
+- *Flat file (`<project>/.claude/claude-session.yaml`) rather than
+  nested dir.* Loses the ability to colocate scripts/templates next to
+  the config. Rejected.
+- *Explicit `mode:` discriminator.* Adds ceremony; the config-shape
+  encoding is more flexible. Rejected.
+- *Keep `git-guard.yaml` as a separate file.* Loses single-surface
+  benefit; future hooks add more files. Rejected (worth the one-time
+  loader migration).
+
+**Consequences:**
+
+- **Supersedes DEC-023** for config location, file format, and "mode"
+  framing. DEC-023's per-project venv design + Nix-mode goal remain
+  valid as use cases the schema must support; the implementation just
+  doesn't tag them as discrete modes.
+- `wy9.2` (sidecar Cue schema design) lands the concrete schema based
+  on this shape.
+- bi0.6's `load_project_config()` in `git-guard.lua` needs a
+  one-time migration to read `hooks.gitGuard.*` from the new file
+  path.
+- The full schema reference is captured in bd memories
+  `sidecar-config-location-and-shape` and
+  `sidecar-step-execution-model`.
+
+**Revision possible:** the `beads:` section schema is deliberately
+left open pending the external bd-timew merge decision.
+
+---
+
+### DEC-028: Per-Bash-tool-call hooks via mise `[hooks.enter]` — `shellHooks.pre:` surface (2026-06-02)
+
+**Decision:** A separate top-level `shellHooks.pre:` section in the
+sidecar config holds commands that run *before each Bash tool call*
+in claude-session. Coordinator translates these into mise
+`[hooks.enter]` entries in the generated mise config in
+claude-session's worktree. Requires claude-session's `.bashrc` to
+source `mise activate bash`.
+
+Distinct from Claude Code's PreToolUse hooks (`hooks.gitGuard` etc.):
+PreToolUse hooks gate at command-formation time across ALL tool
+calls; `shellHooks.pre:` fires only on shell tool calls and AFTER any
+PreToolUse decision but BEFORE the command runs — providing an
+environment-sensitive, opt-in safety net / config surface that lives
+inside the shell rather than around it.
+
+Schema: `shellHooks.pre:` is a list of step-shape entries (same
+shape as `setup.steps`, sandbox-context only — host-context is
+meaningless here).
+
+**Context:** Mise hooks (`[hooks.enter]` / `[hooks.leave]`) are
+shell-cd-driven; they require mise activation in the shell's rc.
+Claude Code itself isn't a shell (claude-sandbox exec's `claude`
+directly, no shell entry), so mise hooks DON'T fire at session init.
+They DO fire on Bash tool calls (each Bash tool call starts a fresh
+shell that cd's into the worktree → `[hooks.enter]` fires). This
+makes mise hooks a natural fit for *per-Bash-call env hygiene* but
+not for one-time session init.
+
+**Alternatives considered:**
+
+- *Use mise hooks for session-init too.* Wouldn't work — claude isn't
+  a shell. Rejected.
+- *Fold into existing `hooks:` section as `hooks.preShell:`.* The
+  existing `hooks:` namespace is for Claude Code hook implementations
+  (PreToolUse handlers); mixing two concepts in one namespace reads
+  ambiguously. Rejected.
+- *Auto-emit `shellHooks.pre:` from every `setup.steps:` entry.* Too
+  much coupling; users want session-init scaffolding to NOT re-run on
+  every Bash call. Rejected.
+- *Symmetric `shellHooks.post:` via shell `trap "..." EXIT`.* Deferred
+  until a real use case. mise's `[hooks.leave]` fires only on cd-out,
+  not shell-exit; we'd need trap injection. Punted.
+
+**Consequences:**
+
+- claude-session's `.bashrc` (provisioned during `just provision`)
+  must source `mise activate bash`. Adds a step to F-git1's
+  successor.
+- `shellHooks.pre:` is opt-in — empty by default; no behavior change
+  for users who don't declare anything.
+- A real "before bash" extension point distinct from PreToolUse
+  emerges; future per-language env auto-setup (e.g. python venv
+  activate, node nvm switch) can live here without polluting the
+  PreToolUse hook namespace.
+
+**Revision possible:** if mise gains a session-init equivalent of
+`[hooks.enter]`, the boundary between session-init and per-call
+hooks may collapse to a single surface.
