@@ -412,12 +412,15 @@ describe("git-guard", function()
           ask_branch_patterns = { "release/*" },
         }
       end
+      -- Use a verb whose state-changing check truly hinges on current
+      -- branch (commit). With `push origin release/1.0`, C3's analyze_push
+      -- fires on the refspec dst before C2's current-branch path runs.
       local d, r = gg2.decide({
         cwd = "/repo",
-        tool_input = { command = "git push origin release/1.0" },
+        tool_input = { command = "git commit -m foo" },
       })
       assert.are.equal("ask", d)
-      assert.is_truthy(r:find("ask_branch_patterns"))
+      assert.is_truthy(r:find("ask_branch_patterns") or r:find("release/1.0"))
     end)
 
     it("ASKS when current branch is unavailable (detached HEAD)", function()
@@ -476,6 +479,232 @@ describe("git-guard", function()
       })
       assert.are.equal("ask", d, r)
       assert.is_truthy(r:find("DEV"))
+    end)
+  end)
+
+  -- ── C3 (bi0.3) — ref-rewriting denylist + refspec parsing ──
+
+  describe("parse_push_refspec()", function()
+    local gg3 = load_with_home("/tmp")
+
+    it("extracts dst from src:dst form", function()
+      local dst, del = gg3.parse_push_refspec("feat:main")
+      assert.are.equal("main", dst)
+      assert.is_false(del)
+    end)
+
+    it("extracts dst from bare-src form (dst = src)", function()
+      local dst, del = gg3.parse_push_refspec("feature")
+      assert.are.equal("feature", dst)
+      assert.is_false(del)
+    end)
+
+    it("flags :dst (delete) form", function()
+      local dst, del = gg3.parse_push_refspec(":main")
+      assert.are.equal("main", dst)
+      assert.is_true(del)
+    end)
+
+    it("strips leading + (force-push marker) before parsing", function()
+      local dst, del = gg3.parse_push_refspec("+feat:main")
+      assert.are.equal("main", dst)
+      assert.is_false(del)
+    end)
+
+    it("returns nil on malformed input", function()
+      assert.is_nil((gg3.parse_push_refspec("")))
+      assert.is_nil((gg3.parse_push_refspec(nil)))
+      assert.is_nil((gg3.parse_push_refspec("a:b:c")))
+    end)
+  end)
+
+  describe("analyze_push()", function()
+    local gg3 = load_with_home("/tmp")
+    local ctx = { protected = { "main", "master" }, ask_patterns = { "release/*" } }
+
+    it("returns nil for bare push (defer to C2)", function()
+      local d = gg3.analyze_push({}, ctx)
+      assert.is_nil(d)
+    end)
+
+    it("asks for push to '.' (loopback remote)", function()
+      local d, r = gg3.analyze_push({ ".", "master:foo" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("push %."))
+    end)
+
+    it("asks for push --mirror", function()
+      local d, r = gg3.analyze_push({ "--mirror", "origin" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("mirror"))
+    end)
+
+    it("asks for push --delete on protected ref", function()
+      local d, r = gg3.analyze_push({ "--delete", "origin", "main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("delete"))
+    end)
+
+    it("asks for push --delete on any ref (delete is always dangerous)", function()
+      local d, r = gg3.analyze_push({ "--delete", "origin", "old-feat" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("delete"))
+    end)
+
+    it("asks for :dst (delete refspec)", function()
+      local d, r = gg3.analyze_push({ "origin", ":main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("deletes a remote ref"))
+    end)
+
+    it("asks for src:protected dst", function()
+      local d, r = gg3.analyze_push({ "origin", "feat:main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for force-push without protected dst (history rewrite)", function()
+      local d, r = gg3.analyze_push({ "--force", "origin", "feature" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("ALLOWS explicit feature-only refspec (don't fall through to C2)", function()
+      local d, r = gg3.analyze_push({ "origin", "feature" }, ctx)
+      assert.are.equal("allow", d)
+      assert.is_truthy(r:find("explicit refspec"))
+    end)
+
+    it("ALLOWS multiple feature-only refspecs", function()
+      local d = gg3.analyze_push({ "origin", "feat-a", "feat-b" }, ctx)
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks for ask_branch_patterns hit (release/*)", function()
+      local d, r = gg3.analyze_push({ "origin", "feat:release/1.0" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("release/1.0"))
+    end)
+  end)
+
+  describe("analyze_branch()", function()
+    local gg3 = load_with_home("/tmp")
+    local ctx = { protected = { "main" }, ask_patterns = {} }
+
+    it("returns nil for benign branch invocations", function()
+      assert.is_nil((gg3.analyze_branch({ "new-feature" }, ctx)))
+    end)
+
+    it("asks for branch -f (always asks, regardless of target)", function()
+      local d, r = gg3.analyze_branch({ "-f", "feature", "HEAD" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for branch -d <protected>", function()
+      local d, r = gg3.analyze_branch({ "-d", "main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for branch -D <protected>", function()
+      local d = gg3.analyze_branch({ "-D", "main" }, ctx)
+      assert.are.equal("ask", d)
+    end)
+
+    it("does NOT escalate branch -d <feature> (deferred to generic gated)", function()
+      assert.is_nil((gg3.analyze_branch({ "-d", "old-feature" }, ctx)))
+    end)
+
+    it("asks for branch --move touching protected ref", function()
+      local d, r = gg3.analyze_branch({ "--move", "main", "old-main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+  end)
+
+  describe("decide() — C3 ref-rewriting matrix (integrated)", function()
+    local stub = require("luassert.stub")
+    local gg3 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg3._git, "current_branch").returns("feat/x")
+      stub.new(gg3._git, "origin_head_branch").returns(nil)
+      gg3.load_config = function()
+        return {
+          protected_branches = { "main", "master" },
+          ask_branch_patterns = { "release/*" },
+        }
+      end
+    end)
+
+    after_each(function()
+      gg3._git.current_branch:revert()
+      gg3._git.origin_head_branch:revert()
+      gg3._reset_config_cache()
+    end)
+
+    it("asks for `git push origin :main`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin :main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("deletes"))
+    end)
+
+    it("asks for `git push origin feat:main`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin feat:main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("allows `git push origin feature` from a protected current branch (refspec overrides)", function()
+      gg3._git.current_branch:revert()
+      stub.new(gg3._git, "current_branch").returns("main")
+      local d = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin feature" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks for `git push .` (loopback)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push . feat:foo" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("push %."))
+    end)
+
+    it("asks for `git push --force` even on feature", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push --force origin feature" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for `git branch -f` (always)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git branch -f main HEAD" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for `git branch -D main` (protected delete)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git branch -D main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for `git update-ref refs/heads/main HEAD`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git update-ref refs/heads/main HEAD" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("update%-ref"))
+    end)
+
+    it("asks for `git fetch . main:other` (local-loopback fetch)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git fetch . main:other" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("fetch %."))
+    end)
+
+    it("falls through to C2 for bare `git push` (no refspec)", function()
+      gg3._git.current_branch:revert()
+      stub.new(gg3._git, "current_branch").returns("main")
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("protected branch"))
     end)
   end)
 end)

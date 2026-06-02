@@ -364,6 +364,188 @@ function M.branch_matches_any(branch, patterns)
   return false
 end
 
+-- ── C3: refspec parsing + ref-rewriting denylist ──
+
+-- Extract the destination ref from a single push refspec.
+-- Refspecs: `[+]?<src>[:<dst>]` or `[+]?:<dst>` (delete).
+-- Returns (dst, is_delete). dst is nil if the refspec is malformed.
+-- For `src` with no colon, dst is implicitly src (push src to same name).
+function M.parse_push_refspec(spec)
+  if type(spec) ~= "string" or spec == "" then
+    return nil, false
+  end
+  -- Strip leading `+` (force-push marker).
+  local r = spec:gsub("^%+", "")
+  local src, dst = r:match("^([^:]*):([^:]+)$")
+  if dst then
+    -- `:dst` (empty src) = delete dst on remote.
+    return dst, src == ""
+  end
+  -- No colon: `src` becomes both src and dst.
+  if r:find(":") then
+    return nil, false -- malformed (multiple colons)
+  end
+  return r, false
+end
+
+-- Analyze a `git push` invocation's args.
+-- Returns (decision, reason) where decision is one of:
+--   "ask"   — issue found, ask the user
+--   "allow" — explicit refspecs given, all dests safe (don't fall through
+--              to the C2 current-branch check; the refspecs are
+--              authoritative about what's being modified)
+--   nil     — no explicit refspec, no special flag — defer to C2 default
+function M.analyze_push(args, ctx)
+  ctx = ctx or {}
+  local protected = ctx.protected or {}
+  local ask_patterns = ctx.ask_patterns or {}
+
+  local force_pushing, delete_flag, mirror_flag = false, false, false
+  local positional = {}
+  local i = 1
+  while i <= #args do
+    local a = args[i]
+    if a == "--force" or a == "-f" or a == "--force-with-lease" then
+      force_pushing = true
+      i = i + 1
+    elseif a == "--delete" or a == "-d" then
+      delete_flag = true
+      i = i + 1
+    elseif a == "--mirror" then
+      mirror_flag = true
+      i = i + 1
+    elseif a:sub(1, 1) == "-" then
+      i = i + 1
+    else
+      positional[#positional + 1] = a
+      i = i + 1
+    end
+  end
+
+  local remote = positional[1]
+  -- `git push .` (push to local repo as a remote) → always ask.
+  if remote == "." then
+    return "ask", "git-guard: 'git push .' rewrites local refs via remote-loopback — always asks"
+  end
+
+  -- `--mirror` rewrites every remote ref.
+  if mirror_flag then
+    return "ask", "git-guard: 'git push --mirror' rewrites every remote ref — always asks"
+  end
+
+  -- --delete <remote> <ref>: positional[2..N] are refs to delete.
+  if delete_flag then
+    for j = 2, #positional do
+      local ref = positional[j]
+      if M.branch_matches_any(ref, protected) or M.branch_matches_any(ref, ask_patterns) then
+        return "ask", string.format("git-guard: 'git push --delete' on protected ref %q — always asks", ref)
+      end
+    end
+    return "ask", "git-guard: 'git push --delete' rewrites refs — always asks"
+  end
+
+  -- Refspecs: positional[2..N]. Track whether any explicit refspec exists.
+  local has_refspec = false
+  for j = 2, #positional do
+    has_refspec = true
+    local spec = positional[j]
+    local dst, is_delete = M.parse_push_refspec(spec)
+    if is_delete then
+      return "ask",
+        string.format("git-guard: 'git push %s :%s' deletes a remote ref — always asks", remote or "?", dst)
+    end
+    if dst and (M.branch_matches_any(dst, protected) or M.branch_matches_any(dst, ask_patterns)) then
+      return "ask",
+        string.format(
+          "git-guard: 'git push %s ...:%s' targets protected ref %q — confirm intent",
+          remote or "?",
+          dst,
+          dst
+        )
+    end
+  end
+
+  if force_pushing then
+    return "ask", "git-guard: 'git push --force[-with-lease]' rewrites history — confirm intent"
+  end
+
+  if has_refspec then
+    -- Explicit refspecs given, none hit protected/ask patterns. The
+    -- refspecs are authoritative about what's being modified; don't
+    -- fall through to the current-branch check (which would over-ask
+    -- when pushing a non-current-branch ref while sitting on a
+    -- protected branch).
+    return "allow", "git-guard: 'git push' with explicit refspec(s); none target protected refs"
+  end
+
+  -- Bare `git push` (no refspec, no special flag): defer to C2's
+  -- current-branch check.
+  return nil, nil
+end
+
+-- Analyze a `git branch` invocation. Returns (decision, reason) when a
+-- ref-rewrite concern fires; nil otherwise.
+function M.analyze_branch(args, ctx)
+  ctx = ctx or {}
+  local protected = ctx.protected or {}
+  local ask_patterns = ctx.ask_patterns or {}
+
+  local force_flag, delete_flag, move_flag = false, false, false
+  local positional = {}
+  local i = 1
+  while i <= #args do
+    local a = args[i]
+    if a == "-f" or a == "--force" then
+      force_flag = true
+      i = i + 1
+    elseif a == "-d" or a == "-D" or a == "--delete" then
+      delete_flag = true
+      i = i + 1
+    elseif a == "-m" or a == "-M" or a == "--move" then
+      move_flag = true
+      i = i + 1
+    elseif a:sub(1, 1) == "-" then
+      i = i + 1 -- skip other flags
+    else
+      positional[#positional + 1] = a
+      i = i + 1
+    end
+  end
+
+  if force_flag then
+    -- `branch -f <name>` force-updates a branch ref to point at HEAD (or
+    -- the given commit). Always asks.
+    return "ask", "git-guard: 'git branch -f' force-updates a ref — always asks"
+  end
+
+  if delete_flag then
+    for _, ref in ipairs(positional) do
+      if M.branch_matches_any(ref, protected) or M.branch_matches_any(ref, ask_patterns) then
+        return "ask", string.format("git-guard: 'git branch -d/-D' on protected branch %q — always asks", ref)
+      end
+    end
+    return nil, nil -- delete of a feature branch is normal; allow path
+  end
+
+  if move_flag then
+    -- branch -m / -M: rename. If renaming away from or to a protected
+    -- ref → ask. Conservative: if any positional matches protected, ask.
+    for _, ref in ipairs(positional) do
+      if M.branch_matches_any(ref, protected) then
+        return "ask",
+          string.format("git-guard: 'git branch --move' touches protected branch %q — confirm intent", ref)
+      end
+    end
+  end
+
+  return nil, nil
+end
+
+-- Verbs that ALWAYS ask regardless of args (direct ref-rewrite primitives).
+M.ALWAYS_ASK_REF_REWRITE = {
+  ["update-ref"] = true,
+}
+
 -- ── Verb classification ──
 
 function M.classify_verb(verb, args)
@@ -437,6 +619,7 @@ function M.decide(data)
     return patterns_cache
   end
 
+  local ref_rewrite_hit = nil
   for _, cmd in ipairs(commands) do
     local verb, args = M.find_git_verb_in_command(cmd)
     if verb then
@@ -444,13 +627,50 @@ function M.decide(data)
       last_verb = verb
       local class = M.classify_verb(verb, args)
       if class == "gated" then
-        if M.STATE_CHANGING_VERBS[verb] then
+        -- C3: ref-rewriting checks fire first (override C2's current-
+        -- branch check when an explicit refspec / ref-targeted op
+        -- names the affected ref).
+        local cfg = get_config()
+        local ctx = {
+          protected = get_protected_patterns(),
+          ask_patterns = (cfg and cfg.ask_branch_patterns) or {},
+        }
+
+        if M.ALWAYS_ASK_REF_REWRITE[verb] then
+          ref_rewrite_hit = {
+            decision = "ask",
+            reason = string.format("git-guard: '%s' is a direct ref-rewrite primitive — always asks", verb),
+          }
+          break
+        end
+
+        local analyzer_decision, analyzer_reason
+        if verb == "push" then
+          analyzer_decision, analyzer_reason = M.analyze_push(args, ctx)
+        elseif verb == "branch" then
+          analyzer_decision, analyzer_reason = M.analyze_branch(args, ctx)
+        elseif verb == "fetch" then
+          -- `git fetch . <refspec>` writes local refs via loopback;
+          -- always ask. Other fetch shapes fall through to C1 generic.
+          if args and args[1] == "." and #args >= 2 then
+            analyzer_decision = "ask"
+            analyzer_reason =
+              "git-guard: 'git fetch .' with refspec rewrites local refs via remote-loopback — always asks"
+          end
+        end
+
+        if analyzer_decision == "ask" then
+          ref_rewrite_hit = { decision = "ask", reason = analyzer_reason }
+          break
+        elseif analyzer_decision == "allow" then
+          -- Explicit refspec / safe ref-targeted op; bypass C2 default.
+          -- Record nothing; loop continues.
+        elseif M.STATE_CHANGING_VERBS[verb] then
           -- C2: check current branch against protected + ask patterns.
           local current = get_current_branch()
           if current then
-            local cfg = get_config()
-            local protected = get_protected_patterns()
-            local ask_branches = (cfg and cfg.ask_branch_patterns) or {}
+            local protected = ctx.protected
+            local ask_branches = ctx.ask_patterns
             if M.branch_matches_any(current, protected) then
               protected_hit = { verb = verb, branch = current, kind = "protected" }
               break
@@ -458,19 +678,13 @@ function M.decide(data)
               protected_hit = { verb = verb, branch = current, kind = "ask_branch_pattern" }
               break
             end
-            -- Else: state-changing verb on a feature branch → allow
-            -- continues; record nothing.
           else
-            -- No current branch (detached HEAD, not-a-repo, git query
-            -- failed). Fail-safe to ask — we can't know it's a feature
-            -- branch, and the verb is state-changing.
             protected_hit = { verb = verb, branch = "?", kind = "no_current_branch" }
             break
           end
         else
-          -- Non-state-changing gated verb (checkout, clean, gc, ...);
-          -- carry C1's generic-ask behavior unless something more
-          -- specific trips.
+          -- Non-state-changing gated verb (checkout, clean, gc, fetch,
+          -- bare branch, …); carry C1's generic-ask.
           generic_gated = generic_gated or verb
         end
       end
@@ -481,6 +695,9 @@ function M.decide(data)
     -- `has_git` matched but no actual git invocation parsed
     -- (e.g. `git=value`, comment, string content). Allow.
     return "allow", "git-guard: no git verb found after parse"
+  end
+  if ref_rewrite_hit then
+    return ref_rewrite_hit.decision, ref_rewrite_hit.reason
   end
   if protected_hit then
     if protected_hit.kind == "protected" then
