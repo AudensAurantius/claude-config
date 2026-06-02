@@ -546,6 +546,103 @@ M.ALWAYS_ASK_REF_REWRITE = {
   ["update-ref"] = true,
 }
 
+-- ── C4: branch-naming enforcement ──
+
+-- Extract the new branch name being CREATED by a given verb+args, if any.
+-- Returns the name string or nil. Detects:
+--   git checkout -b NAME [start]
+--   git checkout -B NAME [start]
+--   git switch   -c NAME [start]
+--   git switch   -C NAME [start]
+--   git branch    NAME [start]      (bare; no -d/-D/-f/--list/etc.)
+function M.new_branch_name(verb, args)
+  if not args then
+    return nil
+  end
+  if verb == "checkout" or verb == "switch" then
+    local i = 1
+    while i <= #args do
+      local a = args[i]
+      if a == "-b" or a == "-B" or a == "-c" or a == "-C" then
+        local name = args[i + 1]
+        if name and name:sub(1, 1) ~= "-" then
+          return name
+        end
+        return nil
+      end
+      i = i + 1
+    end
+    return nil
+  end
+  if verb == "branch" then
+    -- bare branch <name> — confirm no destructive flags.
+    local positional, has_destructive_flag = {}, false
+    for _, a in ipairs(args) do
+      if
+        a == "-d"
+        or a == "-D"
+        or a == "--delete"
+        or a == "-f"
+        or a == "--force"
+        or a == "--list"
+        or a == "-m"
+        or a == "-M"
+        or a == "--move"
+        or a == "--show-current"
+        or a == "--edit-description"
+      then
+        has_destructive_flag = true
+      elseif a:sub(1, 1) == "-" then
+        -- Other flag; ignore for create-detection.
+      else
+        positional[#positional + 1] = a
+      end
+    end
+    if has_destructive_flag then
+      return nil
+    end
+    -- positional[1] is the new branch name; positional[2] (optional) is start-point.
+    return positional[1]
+  end
+  return nil
+end
+
+-- Check a new-branch name against branch_naming.patterns. Three-valued:
+--   "allow" — naming configured AND the new name conforms (overrides
+--             C1's generic-gated checkout/switch/branch ask).
+--   "ask" / "deny" — name violates the configured patterns (per
+--             branch_naming.on_violation; default ask).
+--   nil — naming unconfigured / not a create-form (defer).
+function M.analyze_new_branch_name(verb, args, cfg)
+  local name = M.new_branch_name(verb, args)
+  if not name then
+    return nil
+  end
+  local bn = (cfg or {}).branch_naming
+  if type(bn) ~= "table" then
+    return nil
+  end
+  local patterns = bn.patterns
+  if type(patterns) ~= "table" or #patterns == 0 then
+    return nil
+  end
+
+  for _, p in ipairs(patterns) do
+    if M.match_pattern(name, p) then
+      return "allow", string.format("git-guard: new branch %q matches branch_naming pattern %q", name, p)
+    end
+  end
+
+  local action = (bn.on_violation == "deny") and "deny" or "ask"
+  return action,
+    string.format(
+      "git-guard: new branch %q does not match branch_naming.patterns (configured: %s) — %s",
+      name,
+      table.concat(patterns, ", "),
+      action == "deny" and "denied" or "confirm intent"
+    )
+end
+
 -- ── Verb classification ──
 
 function M.classify_verb(verb, args)
@@ -642,6 +739,17 @@ function M.decide(data)
             reason = string.format("git-guard: '%s' is a direct ref-rewrite primitive — always asks", verb),
           }
           break
+        end
+
+        -- C4: branch-naming enforcement on new-branch creation forms.
+        -- Fires before C3/C2 because the concern is the NEW name
+        -- (independent of current-branch protection or refspec dst).
+        do
+          local naming_decision, naming_reason = M.analyze_new_branch_name(verb, args, cfg)
+          if naming_decision then
+            ref_rewrite_hit = { decision = naming_decision, reason = naming_reason }
+            break
+          end
         end
 
         local analyzer_decision, analyzer_reason

@@ -412,9 +412,8 @@ describe("git-guard", function()
           ask_branch_patterns = { "release/*" },
         }
       end
-      -- Use a verb whose state-changing check truly hinges on current
-      -- branch (commit). With `push origin release/1.0`, C3's analyze_push
-      -- fires on the refspec dst before C2's current-branch path runs.
+      -- `git commit` hinges on current-branch (no refspec for C3 to
+      -- override on). C2's ask_branch_pattern path should fire.
       local d, r = gg2.decide({
         cwd = "/repo",
         tool_input = { command = "git commit -m foo" },
@@ -705,6 +704,161 @@ describe("git-guard", function()
       local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push" } })
       assert.are.equal("ask", d)
       assert.is_truthy(r:find("protected branch"))
+    end)
+  end)
+
+  -- ── C4 (bi0.4) — branch-naming enforcement ──
+
+  describe("new_branch_name()", function()
+    local gg4 = load_with_home("/tmp")
+
+    it("extracts NAME from checkout -b NAME", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-b", "feat/x" }))
+    end)
+
+    it("extracts NAME from checkout -B NAME (force-create)", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-B", "feat/x" }))
+    end)
+
+    it("extracts NAME from switch -c NAME / -C NAME", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("switch", { "-c", "feat/x" }))
+      assert.are.equal("feat/x", gg4.new_branch_name("switch", { "-C", "feat/x" }))
+    end)
+
+    it("ignores start-point arg (NAME is the first positional after -b/-c)", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-b", "feat/x", "origin/main" }))
+    end)
+
+    it("returns nil if checkout/switch has no -b/-B/-c/-C", function()
+      assert.is_nil(gg4.new_branch_name("checkout", { "feat/x" })) -- plain checkout (no create)
+      assert.is_nil(gg4.new_branch_name("switch", { "feat/x" }))
+    end)
+
+    it("extracts NAME from bare `git branch <name>`", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("branch", { "feat/x" }))
+      assert.are.equal("feat/x", gg4.new_branch_name("branch", { "feat/x", "main" }))
+    end)
+
+    it("returns nil for `git branch -d/-D/-f/--list` (not a create)", function()
+      assert.is_nil(gg4.new_branch_name("branch", { "-d", "feat/x" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "-D", "main" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "-f", "feat/x" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "--list" }))
+    end)
+
+    it("returns nil for non-create verbs", function()
+      assert.is_nil(gg4.new_branch_name("commit", { "-m", "foo" }))
+      assert.is_nil(gg4.new_branch_name("push", { "origin", "feat" }))
+    end)
+  end)
+
+  describe("analyze_new_branch_name()", function()
+    local gg4 = load_with_home("/tmp")
+
+    local function cfg(patterns, on_violation)
+      return { branch_naming = { patterns = patterns, on_violation = on_violation } }
+    end
+
+    it("returns nil if branch_naming is unconfigured", function()
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, {})))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, cfg(nil, nil))))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, cfg({}, nil))))
+    end)
+
+    it("returns 'allow' when the new name matches a pattern (overrides C1 generic-gated)", function()
+      local d, r = gg4.analyze_new_branch_name("checkout", { "-b", "mhaynes/feat/x" }, cfg({ "mhaynes/feat/*" }))
+      assert.are.equal("allow", d)
+      assert.is_truthy(r:find("matches branch_naming pattern"))
+    end)
+
+    it("asks (default on_violation) when the name does NOT match", function()
+      local d, r = gg4.analyze_new_branch_name("checkout", { "-b", "random-name" }, cfg({ "mhaynes/feat/*" }))
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("denies when on_violation = deny", function()
+      local d, r = gg4.analyze_new_branch_name("switch", { "-c", "random-name" }, cfg({ "mhaynes/feat/*" }, "deny"))
+      assert.are.equal("deny", d)
+      assert.is_truthy(r:find("denied"))
+    end)
+
+    it("checks multiple patterns (any match → conforming → allow)", function()
+      local d = gg4.analyze_new_branch_name("branch", { "dev/foo/phase-1" }, cfg({ "mhaynes/feat/*", "dev/*/phase-*" }))
+      assert.are.equal("allow", d)
+    end)
+
+    it("supports `re:` regex patterns", function()
+      local d = gg4.analyze_new_branch_name("checkout", { "-b", "v123" }, cfg({ "re:v%d+" }))
+      assert.are.equal("allow", d)
+      local d2, _ = gg4.analyze_new_branch_name("checkout", { "-b", "vXYZ" }, cfg({ "re:v%d+" }))
+      assert.are.equal("ask", d2)
+    end)
+
+    it("returns nil for non-create forms even with naming configured", function()
+      assert.is_nil((gg4.analyze_new_branch_name("commit", { "-m", "x" }, cfg({ "feat/*" }))))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "main" }, cfg({ "feat/*" }))))
+    end)
+  end)
+
+  describe("decide() — C4 branch-naming integrated", function()
+    local stub = require("luassert.stub")
+    local gg4 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg4._git, "current_branch").returns("feat/x")
+      stub.new(gg4._git, "origin_head_branch").returns(nil)
+      gg4.load_config = function()
+        return {
+          protected_branches = { "main" },
+          branch_naming = {
+            patterns = { "mhaynes/feat/*", "dev/*/phase-*" },
+            on_violation = "ask",
+          },
+        }
+      end
+    end)
+
+    after_each(function()
+      gg4._git.current_branch:revert()
+      gg4._git.origin_head_branch:revert()
+      gg4._reset_config_cache()
+    end)
+
+    it("allows `git checkout -b mhaynes/feat/widget`", function()
+      local d = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b mhaynes/feat/widget" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks `git checkout -b random-name`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b random-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("asks `git switch -c bad-name`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git switch -c bad-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("asks bare `git branch <bad-name>`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git branch bad-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("denies when on_violation = deny", function()
+      gg4.load_config = function()
+        return {
+          protected_branches = { "main" },
+          branch_naming = { patterns = { "mhaynes/feat/*" }, on_violation = "deny" },
+        }
+      end
+      gg4._reset_config_cache()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b bad-name" } })
+      assert.are.equal("deny", d)
+      assert.is_truthy(r:find("denied"))
     end)
   end)
 end)
