@@ -67,6 +67,57 @@ unprovision:
 smoke:
     sandbox/scripts/smoke-test.sh
 
+# Build manpages from sandbox/man/*.scd via scdoc (ClaudeConfig-4g0).
+# Outputs are placed alongside their .scd sources; install-man-sandbox
+# copies them into ${PREFIX}/share/man/<section>/.
+build-man-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v scdoc >/dev/null 2>&1; then
+        echo "build-man-sandbox: scdoc not installed (apt-get install scdoc)" >&2
+        exit 1
+    fi
+    shopt -s nullglob
+    built=0
+    for src in sandbox/man/*.scd; do
+        out="${src%.scd}"
+        scdoc < "$src" > "$out"
+        echo "  ✓ $out"
+        built=$((built + 1))
+    done
+    if [ "$built" -eq 0 ]; then
+        echo "  (no .scd sources under sandbox/man/)"
+    fi
+
+# Install sandbox manpages to ${PREFIX}/share/man/man<section>/.
+install-man-sandbox: build-man-sandbox
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    for built in sandbox/man/*.[1-8]; do
+        section="${built##*.}"
+        name="$(basename "$built")"
+        target_dir="{{prefix}}/share/man/man${section}"
+        install -d -m 0755 "$target_dir"
+        install -m 0644 "$built" "${target_dir}/${name}"
+        echo "  ✓ ${target_dir}/${name}"
+    done
+
+# Uninstall sandbox manpages.
+uninstall-man-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    for built in sandbox/man/*.[1-8]; do
+        section="${built##*.}"
+        name="$(basename "$built")"
+        target="{{prefix}}/share/man/man${section}/${name}"
+        if [ -e "$target" ]; then
+            echo "  rm $target"
+            rm -f "$target"
+        fi
+    done
+
 # Verify installed sandbox files + wrapper version.
 verify-sandbox:
     #!/usr/bin/env bash

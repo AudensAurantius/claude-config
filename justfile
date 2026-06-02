@@ -157,3 +157,13 @@ install-test:
 
 # Verify all installed files across domains
 verify: verify-sandbox verify-hooks verify-git-hooks
+
+# Build all manpages (ClaudeConfig-4g0). Per-domain `build-man-<slug>`
+# recipes do the actual scdoc invocation; this aggregates.
+build-man: build-man-sandbox
+
+# Install all manpages to ${PREFIX}/share/man/.
+install-man: install-man-sandbox
+
+# Uninstall all manpages.
+uninstall-man: uninstall-man-sandbox

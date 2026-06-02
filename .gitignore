@@ -10,6 +10,10 @@
 # bv (beads viewer) local config and caches
 .bv/
 
+# scdoc-built manpages (sources are .scd; built artifacts ignored)
+sandbox/man/*.[1-8]
+claude/scripts/*/man/*.[1-8]
+
 # Python (DEC-019: uv-managed project)
 .venv/
 __pycache__/
