@@ -32,6 +32,8 @@
 
     "workspace.checkThirdParty": false,
     "workspace.library": [],
+    "_workspace.ignoreDir_comment": "Tests live next to the hooks they cover (F-test1 / ew7) but use busted's monkey-patched assert chain which luals can't statically resolve. Strict checking applies to hook + lib source; test rigor is enforced by the actual busted run.",
+    "workspace.ignoreDir": ["tests", "tests/**", "**/tests", "**/tests/**"],
 
     "type.castNumberToInteger": false,
     "type.weakUnionCheck": false,

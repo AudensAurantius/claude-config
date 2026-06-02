@@ -62,13 +62,13 @@ fix:
 # Format all languages: Python (ruff) + Lua (stylua) + Bash (shfmt).
 fmt:
     uv run ruff format
-    stylua claude/scripts/hooks tests-lua
+    stylua claude/scripts/hooks
     shfmt -w -i 4 -ci sandbox/bin sandbox/scripts
 
 # Check formatting without modifying.
 fmt-check:
     uv run ruff format --check
-    stylua --check claude/scripts/hooks tests-lua
+    stylua --check claude/scripts/hooks
     shfmt -d -i 4 -ci sandbox/bin sandbox/scripts
 
 # Strict-mode Lua static type-checking via lua-language-server.
@@ -99,26 +99,20 @@ shellcheck:
 # ── Tests (DEC-022: per-language native frameworks; F-test1 will
 #    colocate tests into per-domain trees) ──
 
-# Run all native-framework tests: pytest (Python) + bats (Bash) +
-# busted (Lua). Args pass through to pytest only. Test trees migrate
-# to per-domain subdirs in F-test1.
+# Aggregate per-language unit tests: pytest (Python; root tests/ is
+# reserved for true integration tests, currently only one smoke case)
+# + per-domain busted/bats via sub-justfile recipes. F-test1 (ew7)
+# colocated Lua tests under claude/scripts/hooks/tests/; sandbox bats
+# tests join as each install/smoke recipe gets behavioral coverage.
 test *args:
     #!/usr/bin/env bash
     set -uo pipefail
-    echo "── pytest ──"
+    echo "── pytest (root tests/) ──"
     uv run pytest {{args}}; py_rc=$?
     echo
-    echo "── bats ──"
-    if [ -d tests-bats ] && find tests-bats -name '*.bats' | grep -q .; then
-        bats tests-bats/; bats_rc=$?
-    else
-        echo "(no bats tests; pending F-test1 per-domain restructure)"
-        bats_rc=0
-    fi
-    echo
-    echo "── busted ──"
-    busted --lpath='./claude/scripts/hooks/?.lua' tests-lua/; bu_rc=$?
-    if [ "$py_rc" -ne 0 ] || [ "$bats_rc" -ne 0 ] || [ "$bu_rc" -ne 0 ]; then
+    echo "── busted (hook domain) ──"
+    just test-hooks; bu_rc=$?
+    if [ "$py_rc" -ne 0 ] || [ "$bu_rc" -ne 0 ]; then
         exit 1
     fi
 

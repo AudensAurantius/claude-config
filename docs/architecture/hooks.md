@@ -179,13 +179,15 @@ path via srt's namespace; one location, both modes.
 
 1. **Author**: `claude/scripts/hooks/<name>.lua` (follow the file
    shape above; `require("_lib")`).
-2. **Test**: `tests-lua/<name>_spec.lua` (busted; `dofile` + clear
+2. **Test**: `claude/scripts/hooks/tests/<name>_spec.lua` (busted; `dofile` + clear
    `package.loaded["_lib"]` for fresh env capture).
 3. **Install map**: add an entry in `sandbox/scripts/_install-manifest.sh`
    shipping the new file to `${SHARE_DIR}/hooks/<name>.lua` (mode
    `755` for executables, `644` for libraries like `_lib.lua`).
 4. **bats install-manifest test**: bump the expected line-count
-   assertion in `tests-bats/test_install_manifest.bats`.
+   assertion in the appropriate sub-domain bats test (per-domain
+   `tests/` after F-test1; previously `tests-bats/test_install_manifest.bats`
+   which was retired by F-just1).
 5. **Register**: add an entry to `sandbox/scripts/_hooks-manifest.sh`
    under the appropriate event key (PreToolUse, PostToolUse). Use
    `${SANDBOX_HOME}` for the path and the right matcher (`.*` for

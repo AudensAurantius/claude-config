@@ -38,6 +38,11 @@ uninstall-hooks:
     done
     echo "✓ hooks uninstalled"
 
+# Run hook-domain unit tests (busted; tests colocated under tests/).
+# ClaudeConfig-ew7 / F-test1.
+test-hooks:
+    busted --lpath='./claude/scripts/hooks/?.lua' claude/scripts/hooks/tests/
+
 # Verify installed hook files.
 verify-hooks:
     #!/usr/bin/env bash
