@@ -1,3 +1,12 @@
+cross-cutting:
+- ClaudeConfig-754
+- ClaudeConfig-h1z
+- ClaudeConfig-0by
+egress:
+- ClaudeConfig-ciw.1
+- ClaudeConfig-ciw.2
+- ClaudeConfig-ciw.3
+- ClaudeConfig-40s.15.5
 research:
 - J121-1aj
 - J121-2ou
@@ -8,6 +17,15 @@ review:
 sandbox-wrapper:
 - ClaudeConfig-40s.15.8.1
 - ClaudeConfig-40s.15.5
+sidecar:
+- ClaudeConfig-wy9.1
+- ClaudeConfig-wy9.2
+- ClaudeConfig-8wl
+- ClaudeConfig-wy9.3
+- ClaudeConfig-wy9.4
+- ClaudeConfig-wy9.5
 skills:
 - J121-9kp.5
 - J121-9kp.2.11
+tooling:
+- ClaudeConfig-2s3.5
