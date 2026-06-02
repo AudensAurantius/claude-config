@@ -27,7 +27,12 @@ determined adversary. See handoff doc §8 for the honest framing.
 ]]
 
 local lib = require("_lib")
+local git = require("_git")
 local M = {}
+
+-- Tests can stub the git interface via `stub.new(M._git, "current_branch")`.
+-- Internal-only handle; refers to the same module the production hook calls.
+M._git = git
 
 -- ── Verb classification tables ──
 
@@ -59,6 +64,24 @@ M.SAFE_SUBFORMS = {
   config = { ["--get"] = true, ["--list"] = true },
   -- `git remote -v` and `git remote show <name>` are read-only.
   remote = { ["-v"] = true, show = true },
+}
+
+-- State-changing verbs (bi0.2 C2 scope): write to or modify the
+-- current branch's history. The protected-branch check applies only
+-- to these — other gated verbs (checkout/switch/clean/gc/fetch
+-- without refspec) keep C1's generic-ask behavior.
+M.STATE_CHANGING_VERBS = {
+  commit = true,
+  push = true,
+  pull = true,
+  merge = true,
+  rebase = true,
+  reset = true,
+  ["cherry-pick"] = true,
+  revert = true,
+  am = true,
+  apply = true,
+  stash = true,
 }
 
 -- ── Config loading (fail-safe) ──
@@ -255,6 +278,92 @@ function M.find_git_verb_in_command(tokens)
   return nil
 end
 
+-- ── Pattern matching (C2: branch-name glob/regex matching) ──
+
+-- Convert a glob (with `*` and `?` wildcards) to an anchored Lua pattern.
+-- Escapes Lua-pattern special characters first; then translates `*`/`?`.
+-- Anchored start+end so a glob like "main" doesn't match "main-fork".
+function M.glob_to_lua_pattern(glob)
+  -- TODO(F-lib): migrate to lua-glob-pattern (Debian luarocks-only) for
+  -- full glob support (`[abc]`, `[!abc]`, `**`). Today's subset (`*`,
+  -- `?`) covers branch-name patterns used in the wild.
+  local p = glob:gsub("([%%%(%)%.%+%-%[%]%^%$])", "%%%1")
+  p = p:gsub("%*", ".*")
+  p = p:gsub("%?", ".")
+  return "^" .. p .. "$"
+end
+
+-- Match a string against a pattern entry. Patterns prefixed with `re:`
+-- are treated as Lua regex (not full PCRE — Lua patterns are simpler);
+-- everything else is treated as a glob.
+function M.match_pattern(s, pattern)
+  if type(s) ~= "string" or type(pattern) ~= "string" then
+    return false
+  end
+  if pattern:sub(1, 3) == "re:" then
+    return s:match("^" .. pattern:sub(4) .. "$") ~= nil
+  end
+  return s:match(M.glob_to_lua_pattern(pattern)) ~= nil
+end
+
+-- ── Protected-branch resolution (C2) ──
+
+-- Resolve the protected branches for a given working directory.
+-- Order: per_repo override (first prefix match on abs path) → global
+-- protected_branches → origin/HEAD fallback (last resort; handoff §2
+-- explicitly warns this is unreliable).
+--
+-- Returns (patterns, source) where:
+--   patterns: list of branch patterns (globs or `re:`-prefixed regex)
+--   source:   "per_repo" | "global" | "origin_head" | "none"
+function M.resolve_protected_branches(cwd, config)
+  config = config or {}
+  -- per_repo first (first-match-wins on prefix-match of cwd against
+  -- entry.match; handoff §4 decision 2).
+  local per_repo = config.per_repo or {}
+  for _, entry in ipairs(per_repo) do
+    local match = entry and entry.match
+    if type(match) == "string" and match ~= "" then
+      -- Prefix match with `/` boundary: `/home/X/Y` matches `/home/X/Y`,
+      -- `/home/X/Y/sub/dir`, but NOT `/home/X/Y-foo`.
+      local norm = match:gsub("/+$", "")
+      if cwd == norm or cwd:sub(1, #norm + 1) == norm .. "/" then
+        local patterns = entry.protected_branches
+        if type(patterns) == "table" and #patterns > 0 then
+          return patterns, "per_repo"
+        end
+      end
+    end
+  end
+
+  -- Global protected_branches
+  local global_patterns = config.protected_branches
+  if type(global_patterns) == "table" and #global_patterns > 0 then
+    return global_patterns, "global"
+  end
+
+  -- origin/HEAD fallback (last resort)
+  local origin_head = M._git.origin_head_branch(cwd)
+  if origin_head then
+    return { origin_head }, "origin_head"
+  end
+
+  return {}, "none"
+end
+
+-- Check whether a branch name matches any pattern in the list.
+function M.branch_matches_any(branch, patterns)
+  if not branch or type(patterns) ~= "table" then
+    return false
+  end
+  for _, p in ipairs(patterns) do
+    if M.match_pattern(branch, p) then
+      return true
+    end
+  end
+  return false
+end
+
 -- ── Verb classification ──
 
 function M.classify_verb(verb, args)
@@ -292,16 +401,78 @@ function M.decide(data)
   end
 
   -- Walk every separator-delimited command; classify each git invocation.
+  -- C2: STATE_CHANGING verbs (commit/push/merge/...) on a protected branch
+  -- ask; on a feature branch allow. Other gated verbs (checkout, clean,
+  -- gc, fetch, ...) keep C1's generic-ask. Compound logic: ANY ask
+  -- wins (most-restrictive across the compound).
   local commands = M.split_commands(tokens)
-  local any_git, any_gated, last_verb = false, false, nil
+  local cwd = (type(data) == "table" and type(data.cwd) == "string") and data.cwd or nil
+  local any_git, last_verb = false, nil
+  local protected_hit, generic_gated = nil, false
+
+  -- Lazy-resolved per-decide-call: only compute current-branch + protected
+  -- list when we actually see a STATE_CHANGING verb. Caches for the
+  -- compound walk so we don't shell out to git twice.
+  local cfg_cache, branch_cache, patterns_cache
+  local function get_config()
+    if cfg_cache == nil then
+      cfg_cache = M.load_config() or {}
+    end
+    return cfg_cache
+  end
+  local function get_current_branch()
+    if branch_cache == nil and cwd then
+      branch_cache = M._git.current_branch(cwd) or false
+    end
+    if branch_cache == false then
+      return nil
+    end
+    return branch_cache
+  end
+  local function get_protected_patterns()
+    if patterns_cache == nil then
+      local p, _src = M.resolve_protected_branches(cwd or "/", get_config())
+      patterns_cache = p
+    end
+    return patterns_cache
+  end
+
   for _, cmd in ipairs(commands) do
     local verb, args = M.find_git_verb_in_command(cmd)
     if verb then
       any_git = true
       last_verb = verb
-      if M.classify_verb(verb, args) == "gated" then
-        any_gated = true
-        break -- any gated verb anywhere in the compound → ask
+      local class = M.classify_verb(verb, args)
+      if class == "gated" then
+        if M.STATE_CHANGING_VERBS[verb] then
+          -- C2: check current branch against protected + ask patterns.
+          local current = get_current_branch()
+          if current then
+            local cfg = get_config()
+            local protected = get_protected_patterns()
+            local ask_branches = (cfg and cfg.ask_branch_patterns) or {}
+            if M.branch_matches_any(current, protected) then
+              protected_hit = { verb = verb, branch = current, kind = "protected" }
+              break
+            elseif M.branch_matches_any(current, ask_branches) then
+              protected_hit = { verb = verb, branch = current, kind = "ask_branch_pattern" }
+              break
+            end
+            -- Else: state-changing verb on a feature branch → allow
+            -- continues; record nothing.
+          else
+            -- No current branch (detached HEAD, not-a-repo, git query
+            -- failed). Fail-safe to ask — we can't know it's a feature
+            -- branch, and the verb is state-changing.
+            protected_hit = { verb = verb, branch = "?", kind = "no_current_branch" }
+            break
+          end
+        else
+          -- Non-state-changing gated verb (checkout, clean, gc, ...);
+          -- carry C1's generic-ask behavior unless something more
+          -- specific trips.
+          generic_gated = generic_gated or verb
+        end
       end
     end
   end
@@ -311,8 +482,31 @@ function M.decide(data)
     -- (e.g. `git=value`, comment, string content). Allow.
     return "allow", "git-guard: no git verb found after parse"
   end
-  if any_gated then
-    return "ask", "git-guard: gated git verb in command (C1 placeholder; protected-branch logic in C2/C3)"
+  if protected_hit then
+    if protected_hit.kind == "protected" then
+      return "ask",
+        string.format(
+          "git-guard: %s on protected branch %q — confirm intent",
+          protected_hit.verb,
+          protected_hit.branch
+        )
+    elseif protected_hit.kind == "ask_branch_pattern" then
+      return "ask",
+        string.format(
+          "git-guard: %s on branch %q matched ask_branch_patterns — confirm intent",
+          protected_hit.verb,
+          protected_hit.branch
+        )
+    else
+      return "ask",
+        string.format(
+          "git-guard: %s but cwd not on a branch (detached HEAD or not-a-repo) — confirm intent",
+          protected_hit.verb
+        )
+    end
+  end
+  if generic_gated then
+    return "ask", string.format("git-guard: gated verb %q (C1 fallback; covered by C3+ when refined)", generic_gated)
   end
   return "allow", "git-guard: all git verbs safe (last: " .. last_verb .. ")"
 end
