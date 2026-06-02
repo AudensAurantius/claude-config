@@ -546,6 +546,74 @@ M.ALWAYS_ASK_REF_REWRITE = {
   ["update-ref"] = true,
 }
 
+-- ── C5: git -C / --git-dir / --work-tree detection ──
+
+-- Scan a single command's tokens for git-path-redirection flags
+-- (-C <dir>, --git-dir <path> | --git-dir=<path>, --work-tree <path> |
+-- --work-tree=<path>). These flags relocate the git operation to a
+-- target dir, bypassing the cwd-based safety assumption.
+-- Returns a list of `{flag = ..., target = ...}` records (one per
+-- flag use; possible to have multiple in one invocation), or empty
+-- table when none.
+--
+-- Walks from the start of the command: skips env-var prefixes,
+-- expects `git` next, then collects path flags until the verb (first
+-- non-flag positional).
+function M.detect_git_path_flags(tokens)
+  local results = {}
+  if type(tokens) ~= "table" or #tokens == 0 then
+    return results
+  end
+
+  local i = 1
+  while i <= #tokens do
+    local t = tokens[i]
+    if t:match("^[%w_]+=") then
+      i = i + 1
+    else
+      break
+    end
+  end
+  if i > #tokens or tokens[i] ~= "git" then
+    return results
+  end
+  i = i + 1
+
+  while i <= #tokens do
+    local arg = tokens[i]
+    if arg == "-C" or arg == "--git-dir" or arg == "--work-tree" then
+      local val = tokens[i + 1]
+      if val then
+        results[#results + 1] = { flag = arg, target = val }
+      end
+      i = i + 2
+    elseif arg:match("^%-%-git%-dir=(.+)$") then
+      local val = arg:match("^%-%-git%-dir=(.+)$")
+      results[#results + 1] = { flag = "--git-dir", target = val }
+      i = i + 1
+    elseif arg:match("^%-%-work%-tree=(.+)$") then
+      local val = arg:match("^%-%-work%-tree=(.+)$")
+      results[#results + 1] = { flag = "--work-tree", target = val }
+      i = i + 1
+    elseif arg:match("^%-c=") or arg == "-c" then
+      -- `-c key=value` config setter; not a path flag. Skip it (and
+      -- its value, for the separated form).
+      if arg == "-c" then
+        i = i + 2
+      else
+        i = i + 1
+      end
+    elseif arg:sub(1, 1) == "-" then
+      i = i + 1
+    else
+      -- Reached the verb (first non-flag positional). Stop.
+      break
+    end
+  end
+
+  return results
+end
+
 -- ── C4: branch-naming enforcement ──
 
 -- Extract the new branch name being CREATED by a given verb+args, if any.
@@ -722,6 +790,37 @@ function M.decide(data)
     if verb then
       any_git = true
       last_verb = verb
+
+      -- C5: git -C / --git-dir / --work-tree always asks at the global
+      -- level (the project hook in C6 will refine to "allow when target
+      -- is in the project's allowed_git_dirs"). Fires BEFORE classify_verb
+      -- so even safe verbs (`git -C /repo status`) ask. Honors
+      -- options.git_dash_c_policy (default ask).
+      local path_flags = M.detect_git_path_flags(cmd)
+      if #path_flags > 0 then
+        local cfg = get_config()
+        local policy = ((cfg or {}).options or {}).git_dash_c_policy or "ask"
+        if policy == "ask" then
+          local pf = path_flags[1]
+          local extras = ""
+          if #path_flags > 1 then
+            extras = string.format(" (and %d more)", #path_flags - 1)
+          end
+          ref_rewrite_hit = {
+            decision = "ask",
+            reason = string.format(
+              "git-guard: 'git %s' (for verb %q) redirects git to %q%s — global hook always asks (C6 project hook may allow per allowed_git_dirs)",
+              pf.flag,
+              verb,
+              pf.target,
+              extras
+            ),
+          }
+          break
+        end
+        -- policy = "allow" → skip C5; fall through to normal classification.
+      end
+
       local class = M.classify_verb(verb, args)
       if class == "gated" then
         -- C3: ref-rewriting checks fire first (override C2's current-

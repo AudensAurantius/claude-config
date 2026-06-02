@@ -167,11 +167,15 @@ describe("git-guard", function()
     end)
 
     it("allows safe git invocations", function()
+      -- Note: `git -C /repo status` was here in C1 (safe-verb fast-allow),
+      -- but C5 (bi0.5) escalates ALL -C invocations to ask at the global
+      -- level — the project hook (C6) is what restores the allow when
+      -- the targeted dir is in allowed_git_dirs. So bare safe verbs
+      -- here; -C variants are covered in the C5 describe block below.
       for _, c in ipairs({
         "git status",
         "git log -p HEAD",
         "git diff --stat",
-        "git -C /repo status",
         "FOO=bar git rev-parse HEAD",
       }) do
         local d, r = gg.decide({ tool_input = { command = c } })
@@ -859,6 +863,142 @@ describe("git-guard", function()
       local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b bad-name" } })
       assert.are.equal("deny", d)
       assert.is_truthy(r:find("denied"))
+    end)
+  end)
+
+  -- ── C5 (bi0.5) — git -C / --git-dir / --work-tree always-ask (global half) ──
+
+  describe("detect_git_path_flags()", function()
+    local gg5 = load_with_home("/tmp")
+
+    it("detects -C <dir>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "-C", "/repo", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("-C", pf[1].flag)
+      assert.are.equal("/repo", pf[1].target)
+    end)
+
+    it("detects --git-dir <path>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--git-dir", "/r/.git", "log" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--git-dir", pf[1].flag)
+      assert.are.equal("/r/.git", pf[1].target)
+    end)
+
+    it("detects --git-dir=<path> (joined form)", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--git-dir=/r/.git", "log" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--git-dir", pf[1].flag)
+      assert.are.equal("/r/.git", pf[1].target)
+    end)
+
+    it("detects --work-tree <path> and =<path>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--work-tree", "/wt", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--work-tree", pf[1].flag)
+      pf = gg5.detect_git_path_flags({ "git", "--work-tree=/wt", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("/wt", pf[1].target)
+    end)
+
+    it("detects multiple path flags in one invocation", function()
+      local pf = gg5.detect_git_path_flags({
+        "git",
+        "--git-dir",
+        "/r/.git",
+        "--work-tree",
+        "/wt",
+        "status",
+      })
+      assert.are.equal(2, #pf)
+    end)
+
+    it("ignores -c key=value (config setter, not a path flag)", function()
+      local pf = gg5.detect_git_path_flags({ "git", "-c", "user.name=x", "status" })
+      assert.are.equal(0, #pf)
+    end)
+
+    it("returns empty for bare `git verb`", function()
+      assert.are.equal(0, #gg5.detect_git_path_flags({ "git", "status" }))
+    end)
+
+    it("returns empty for non-git commands", function()
+      assert.are.equal(0, #gg5.detect_git_path_flags({ "ls", "-la" }))
+    end)
+
+    it("handles env-var prefixes before git", function()
+      local pf = gg5.detect_git_path_flags({ "FOO=bar", "git", "-C", "/repo", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("/repo", pf[1].target)
+    end)
+  end)
+
+  describe("decide() — C5 git -C global-ask integrated", function()
+    local stub = require("luassert.stub")
+    local gg5 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg5._git, "current_branch").returns("feat/x")
+      stub.new(gg5._git, "origin_head_branch").returns(nil)
+    end)
+
+    after_each(function()
+      gg5._git.current_branch:revert()
+      gg5._git.origin_head_branch:revert()
+      gg5._reset_config_cache()
+    end)
+
+    it("ASKS `git -C /repo status` (overrides C1 safe-verb-allow)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/repo", tool_input = { command = "git -C /repo status" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
+      assert.is_truthy(r:find("/repo"))
+    end)
+
+    it("ASKS `git --git-dir=/r/.git log` (overrides safe verb)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git --git-dir=/r/.git log" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("git%-dir"))
+    end)
+
+    it("ASKS `git -C /repo commit` (also overrides C2 default)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git -C /repo commit -m x" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
+    end)
+
+    it("honors options.git_dash_c_policy=allow (falls through to normal classification)", function()
+      gg5.load_config = function()
+        return { options = { git_dash_c_policy = "allow" } }
+      end
+      local d = gg5.decide({ cwd = "/", tool_input = { command = "git -C /repo status" } })
+      assert.are.equal("allow", d) -- status is safe; -C bypass allowed
+    end)
+
+    it("ALLOWS bare `git status` (no -C flag)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d = gg5.decide({ cwd = "/repo", tool_input = { command = "git status" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("ASKS compound where any leg uses -C", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git status && git -C /other log" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
     end)
   end)
 end)
