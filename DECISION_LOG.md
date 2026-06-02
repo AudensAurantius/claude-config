@@ -200,8 +200,10 @@ content like the user's personal CLAUDE.md.
 - Deployment behavior for new files is decided per-file at the time
   it's added; the deployment-table entry encodes the choice.
 - The CLAUDE.md marker-block content stays short — sandbox awareness
-  + a pointer to `docs/SANDBOX_GUIDE.md` — so the canonical user-
-  facing config remains user-controlled.
+  + a pointer to `docs/architecture/` (current-system reference) and
+  `docs/guides/` (operator how-to) — so the canonical user-facing
+  config remains user-controlled. (Originally `docs/SANDBOX_GUIDE.md`;
+  split per ClaudeConfig-8so / 2026-06-01.)
 
 ---
 
@@ -889,7 +891,9 @@ verified.
   shipped via the provisioning script).
 - **`provision-claude-session.sh` retained.** No deprecation; the
   script becomes part of standard install and gains documentation
-  under `docs/SANDBOX_GUIDE.md`.
+  under `docs/architecture/` (sandbox-model.md) and
+  `docs/guides/oauth-bootstrap.md`. (Originally `docs/SANDBOX_GUIDE.md`;
+  split per ClaudeConfig-8so / 2026-06-01.)
 - **Invocation chain documented.** The canonical sandboxed
   invocation is `sudo -u claude-session srt claude` (composed mode)
   or `sudo -u claude-session bwrap ... -- claude` (standalone mode).
@@ -1199,12 +1203,20 @@ that must persist and inform a future phase.
 
 **Consequences:**
 
-- `docs/design/phase6-worker-isolation.md` is the first entry, with a
-  `docs/design/README.md` documenting the convention (status header:
+- `docs/specs/phase6-worker-isolation.md` is the first entry, with a
+  `docs/specs/README.md` documenting the convention (status header:
   pre-decisional / superseded-by-DEC-NNN / implemented-in-DEC-NNN).
 - Design docs cite the bead that produced them and the DECs they
   relate to; the eventual binding DEC cites back to the design doc.
 - Per CLAUDE.md, this new documentation subdirectory is recorded here.
+
+**Update 2026-06-01 (ClaudeConfig-2l0):** The directory was renamed
+from `docs/design/` to `docs/specs/` as part of a wider `docs/`
+reorganization that introduced `docs/architecture/` (current-system
+design) and `docs/usage/` (problem statement / threat model). The
+convention DEC-015 established is unchanged — only the directory
+name and one sibling-link list inside the README. Existing entries
+(`phase6-worker-isolation.md`, `README.md`) moved to the new path.
 
 ---
 
@@ -1602,7 +1614,7 @@ without the runtime cost.
 **Decision:** Firecracker microVM isolation is **deferred** to a Phase 6
 revisit when swarm-coordinator design begins; the default Phase 6
 worker-isolation mechanism remains **subuid user-namespaces** (per
-`docs/design/phase6-worker-isolation.md` / ClaudeConfig-759).
+`docs/specs/phase6-worker-isolation.md` / ClaudeConfig-759).
 Container-based orchestration (Kubernetes) is **explicitly rejected**
 for swarms.
 
@@ -1633,4 +1645,4 @@ swarm on a single machine.
   concrete adversarial-workload requirement emerges; until then,
   subuid+bwrap is the model.
 - The Firecracker comparison stays in
-  `docs/design/phase6-worker-isolation.md` as a deferred alternative.
+  `docs/specs/phase6-worker-isolation.md` as a deferred alternative.

@@ -1,0 +1,1166 @@
+--[[
+tests-lua/git-guard_spec.lua — busted unit tests for git-guard
+(ClaudeConfig-bi0.1; DEC-017). Covers tokenize, command-splitting,
+verb identification, classification, and the integrated decide()
+matrix.
+]]
+
+describe("git-guard", function()
+  local repo_root = io.popen("git rev-parse --show-toplevel"):read("*line")
+  local script_path = repo_root .. "/claude/scripts/hooks/git-guard.lua"
+
+  local function load_with_home(home)
+    package.loaded["_lib"] = nil
+    package.loaded["git-guard"] = nil
+    local real_getenv = os.getenv
+    os.getenv = function(name)
+      if name == "HOME" then
+        return home
+      end
+      return real_getenv(name)
+    end
+    local mod = dofile(script_path)
+    os.getenv = real_getenv
+    mod._reset_config_cache()
+    return mod
+  end
+
+  local gg = load_with_home("/tmp")
+
+  describe("has_git()", function()
+    it("matches `git` as a standalone token", function()
+      assert.is_true(gg.has_git("git status"))
+      assert.is_true(gg.has_git("cd foo && git push"))
+      assert.is_true(gg.has_git("FOO=bar git commit"))
+    end)
+
+    it("does NOT match `git` embedded in an identifier", function()
+      assert.is_false(gg.has_git("git_log=verbose"))
+      assert.is_false(gg.has_git("agitate"))
+      assert.is_false(gg.has_git("legitimate"))
+    end)
+
+    it("returns false on empty/nil input", function()
+      assert.is_false(gg.has_git(""))
+      assert.is_false(gg.has_git(nil))
+    end)
+  end)
+
+  describe("tokenize()", function()
+    it("splits on whitespace", function()
+      assert.are.same({ "git", "status" }, gg.tokenize("git status"))
+      assert.are.same({ "a", "b", "c" }, gg.tokenize("a   b\tc"))
+    end)
+
+    it("preserves single-quoted strings literally", function()
+      assert.are.same({ "git", "log", "--grep=foo bar" }, gg.tokenize("git log '--grep=foo bar'"))
+    end)
+
+    it("preserves double-quoted strings; processes \\ escapes inside", function()
+      assert.are.same({ "git", "log", "--grep=foo bar" }, gg.tokenize('git log "--grep=foo bar"'))
+      assert.are.same({ 'a"b' }, gg.tokenize('"a\\"b"'))
+    end)
+
+    it("returns nil + error on unbalanced quotes", function()
+      local t, err = gg.tokenize('git log "unbalanced')
+      assert.is_nil(t)
+      assert.are.equal("unbalanced quotes", err)
+    end)
+  end)
+
+  describe("split_commands()", function()
+    it("splits on shell separators", function()
+      local toks = gg.tokenize("cd foo && git status ; ls")
+      assert.are.same({ { "cd", "foo" }, { "git", "status" }, { "ls" } }, gg.split_commands(toks))
+    end)
+
+    it("preserves single-command inputs as one entry", function()
+      local toks = gg.tokenize("git push origin main")
+      assert.are.same({ { "git", "push", "origin", "main" } }, gg.split_commands(toks))
+    end)
+  end)
+
+  describe("find_git_verb_in_command()", function()
+    it("extracts the verb from bare git invocations", function()
+      local v, args = gg.find_git_verb_in_command({ "git", "status" })
+      assert.are.equal("status", v)
+      assert.are.same({}, args)
+      v, args = gg.find_git_verb_in_command({ "git", "log", "-p", "HEAD" })
+      assert.are.equal("log", v)
+      assert.are.same({ "-p", "HEAD" }, args)
+    end)
+
+    it("skips env-var prefixes", function()
+      local v = gg.find_git_verb_in_command({ "FOO=bar", "BAZ=qux", "git", "push" })
+      assert.are.equal("push", v)
+    end)
+
+    it("skips git-level flag/value pairs", function()
+      assert.are.equal("status", gg.find_git_verb_in_command({ "git", "-C", "/repo", "status" }))
+      assert.are.equal("status", gg.find_git_verb_in_command({ "git", "-c", "user.name=x", "status" }))
+      assert.are.equal("commit", gg.find_git_verb_in_command({ "git", "--git-dir", "/r/.git", "commit" }))
+    end)
+
+    it("handles joined --flag=value forms", function()
+      assert.are.equal("status", gg.find_git_verb_in_command({ "git", "--git-dir=/r/.git", "status" }))
+    end)
+
+    it("returns nil when no git invocation in the command", function()
+      assert.is_nil(gg.find_git_verb_in_command({ "cd", "foo" }))
+      assert.is_nil(gg.find_git_verb_in_command({ "NAME=val", "true" }))
+    end)
+  end)
+
+  describe("classify_verb()", function()
+    it("recognizes safe read-only verbs", function()
+      for _, v in ipairs({
+        "log",
+        "diff",
+        "show",
+        "status",
+        "ls-files",
+        "rev-parse",
+        "cat-file",
+        "blame",
+      }) do
+        assert.are.equal("safe", gg.classify_verb(v, {}), "expected safe: " .. v)
+      end
+    end)
+
+    it("gates bare verbs that have safe subforms", function()
+      assert.are.equal("gated", gg.classify_verb("branch", {}))
+      assert.are.equal("gated", gg.classify_verb("config", {}))
+      assert.are.equal("gated", gg.classify_verb("remote", {}))
+    end)
+
+    it("flips subform-conditional verbs to safe when subflag present", function()
+      assert.are.equal("safe", gg.classify_verb("branch", { "--list" }))
+      assert.are.equal("safe", gg.classify_verb("branch", { "--show-current" }))
+      assert.are.equal("safe", gg.classify_verb("config", { "--get", "user.name" }))
+      assert.are.equal("safe", gg.classify_verb("config", { "--list" }))
+      assert.are.equal("safe", gg.classify_verb("remote", { "-v" }))
+      assert.are.equal("safe", gg.classify_verb("remote", { "show", "origin" }))
+      assert.are.equal("safe", gg.classify_verb("tag", { "--list" }))
+    end)
+
+    it("gates the obviously-dangerous verbs", function()
+      for _, v in ipairs({
+        "push",
+        "commit",
+        "merge",
+        "rebase",
+        "reset",
+        "checkout",
+        "switch",
+        "clean",
+        "stash",
+      }) do
+        assert.are.equal("gated", gg.classify_verb(v, {}), "expected gated: " .. v)
+      end
+    end)
+  end)
+
+  describe("decide() — integrated matrix", function()
+    it("allows non-git commands", function()
+      local d = gg.decide({ tool_input = { command = "ls -la" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("allows safe git invocations", function()
+      -- Note: `git -C /repo status` was here in C1 (safe-verb fast-allow),
+      -- but C5 (bi0.5) escalates ALL -C invocations to ask at the global
+      -- level — the project hook (C6) is what restores the allow when
+      -- the targeted dir is in allowed_git_dirs. So bare safe verbs
+      -- here; -C variants are covered in the C5 describe block below.
+      for _, c in ipairs({
+        "git status",
+        "git log -p HEAD",
+        "git diff --stat",
+        "FOO=bar git rev-parse HEAD",
+      }) do
+        local d, r = gg.decide({ tool_input = { command = c } })
+        assert.are.equal("allow", d, "expected allow for: " .. c .. " (got " .. d .. " :: " .. r .. ")")
+      end
+    end)
+
+    it("asks on gated verbs (C1 placeholder)", function()
+      for _, c in ipairs({
+        "git push",
+        "git commit -m ok",
+        "git branch new-feature", -- bare branch, no --list
+        "git checkout -b feat/x",
+        "git reset --hard HEAD~1",
+      }) do
+        local d = gg.decide({ tool_input = { command = c } })
+        assert.are.equal("ask", d, "expected ask for: " .. c)
+      end
+    end)
+
+    it("upgrades safe subforms to allow", function()
+      local d = gg.decide({ tool_input = { command = "git branch --list" } })
+      assert.are.equal("allow", d)
+      d = gg.decide({ tool_input = { command = "git remote -v" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks if any leg of a compound has a gated verb", function()
+      local d = gg.decide({ tool_input = { command = "git status && git push" } })
+      assert.are.equal("ask", d)
+    end)
+
+    it("allows compounds whose every git leg is safe", function()
+      local d = gg.decide({ tool_input = { command = "git fetch || git status" } })
+      -- `fetch` isn't in our safe-verbs list, so we expect ask;
+      -- this confirms our list is conservative (intentionally so
+      -- — fetch can pull anything from any remote).
+      assert.are.equal("ask", d)
+      d = gg.decide({ tool_input = { command = "git status && git diff" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("uses fallback_on_unparseable on tokenizer failure", function()
+      local d = gg.decide({ tool_input = { command = "git log 'unbalanced" } })
+      assert.are.equal("ask", d) -- default fallback
+    end)
+
+    it("handles `git=value` (assignment to var named git) as not-git", function()
+      -- has_git() returns true (the substring matches the bound
+      -- pattern), but find_git_verb_in_command returns nil because
+      -- the token "git=value" is an env-assignment, not the
+      -- literal "git" token.
+      local d = gg.decide({ tool_input = { command = "git=hello echo $git" } })
+      assert.are.equal("allow", d)
+    end)
+  end)
+
+  -- ── C2 (bi0.2) — protected-branch resolution + ask-on-protected ──
+
+  describe("glob_to_lua_pattern() (C2)", function()
+    local gg2 = load_with_home("/tmp")
+
+    it("anchors start and end (no partial matches)", function()
+      local p = gg2.glob_to_lua_pattern("main")
+      assert.is_truthy(("main"):match(p))
+      assert.is_falsy(("main-fork"):match(p))
+      assert.is_falsy(("origin/main"):match(p))
+    end)
+
+    it("translates * to .*", function()
+      local p = gg2.glob_to_lua_pattern("release/*")
+      assert.is_truthy(("release/1.0"):match(p))
+      assert.is_truthy(("release/v2"):match(p))
+      assert.is_falsy(("release"):match(p))
+      assert.is_falsy(("hotfix/1.0"):match(p))
+    end)
+
+    it("translates ? to any single char", function()
+      local p = gg2.glob_to_lua_pattern("v?")
+      assert.is_truthy(("v1"):match(p))
+      assert.is_falsy(("v10"):match(p))
+      assert.is_falsy(("v"):match(p))
+    end)
+
+    it("escapes Lua-pattern special chars in the literal portion", function()
+      local p = gg2.glob_to_lua_pattern("a.b+c")
+      assert.is_truthy(("a.b+c"):match(p))
+      assert.is_falsy(("axb_c"):match(p))
+    end)
+  end)
+
+  describe("match_pattern() (C2)", function()
+    local gg2 = load_with_home("/tmp")
+
+    it("glob: matches when shape aligns", function()
+      assert.is_true(gg2.match_pattern("main", "main"))
+      assert.is_true(gg2.match_pattern("release/1.0", "release/*"))
+      assert.is_false(gg2.match_pattern("main-fork", "main"))
+    end)
+
+    it("re: prefix triggers Lua-pattern regex", function()
+      assert.is_true(gg2.match_pattern("DEV", "re:%u+"))
+      assert.is_true(gg2.match_pattern("dev/foo/phase-2", "re:dev/[^/]+/phase%-%d+"))
+      assert.is_false(gg2.match_pattern("dev/foo", "re:dev/[^/]+/phase%-%d+"))
+    end)
+
+    it("returns false on non-string inputs", function()
+      assert.is_false(gg2.match_pattern(nil, "main"))
+      assert.is_false(gg2.match_pattern("main", nil))
+    end)
+  end)
+
+  describe("resolve_protected_branches() (C2)", function()
+    local gg2 = load_with_home("/tmp")
+
+    it("returns ([], 'none') when config is empty + no origin/HEAD", function()
+      -- Stub origin_head_branch to return nil for this test.
+      local stub = require("luassert.stub")
+      local s = stub.new(gg2._git, "origin_head_branch").returns(nil)
+      local patterns, source = gg2.resolve_protected_branches("/anywhere", {})
+      assert.are.same({}, patterns)
+      assert.are.equal("none", source)
+      s:revert()
+    end)
+
+    it("falls back to origin_head_branch as last resort", function()
+      local stub = require("luassert.stub")
+      local s = stub.new(gg2._git, "origin_head_branch").returns("main")
+      local patterns, source = gg2.resolve_protected_branches("/anywhere", {})
+      assert.are.same({ "main" }, patterns)
+      assert.are.equal("origin_head", source)
+      s:revert()
+    end)
+
+    it("global protected_branches wins over origin/HEAD fallback", function()
+      local stub = require("luassert.stub")
+      local s = stub.new(gg2._git, "origin_head_branch").returns("main")
+      local patterns, source = gg2.resolve_protected_branches("/anywhere", {
+        protected_branches = { "develop", "release/*" },
+      })
+      assert.are.same({ "develop", "release/*" }, patterns)
+      assert.are.equal("global", source)
+      s:revert()
+    end)
+
+    it("per_repo override wins over global (first prefix match)", function()
+      local config = {
+        protected_branches = { "main" },
+        per_repo = {
+          { match = "/home/hactar/Source/J121/SmartStore_Base", protected_branches = { "DEV" } },
+          { match = "/home/hactar/Source/J121/SmartStore_PlugIns", protected_branches = { "Prototype" } },
+        },
+      }
+      local patterns, source = gg2.resolve_protected_branches("/home/hactar/Source/J121/SmartStore_Base", config)
+      assert.are.same({ "DEV" }, patterns)
+      assert.are.equal("per_repo", source)
+
+      -- And the second entry matches its repo
+      patterns, source = gg2.resolve_protected_branches("/home/hactar/Source/J121/SmartStore_PlugIns", config)
+      assert.are.same({ "Prototype" }, patterns)
+      assert.are.equal("per_repo", source)
+    end)
+
+    it("per_repo matches via prefix with `/` boundary", function()
+      local config = {
+        protected_branches = { "main" },
+        per_repo = { { match = "/repo", protected_branches = { "DEV" } } },
+      }
+      assert.are.equal("per_repo", select(2, gg2.resolve_protected_branches("/repo", config)))
+      assert.are.equal("per_repo", select(2, gg2.resolve_protected_branches("/repo/subdir", config)))
+      -- /repo-fork must NOT match /repo (no path-boundary leak)
+      assert.are.equal("global", select(2, gg2.resolve_protected_branches("/repo-fork", config)))
+    end)
+
+    it("falls through to global when per_repo entries don't match", function()
+      local config = {
+        protected_branches = { "main" },
+        per_repo = { { match = "/other/repo", protected_branches = { "DEV" } } },
+      }
+      local patterns, source = gg2.resolve_protected_branches("/home/work", config)
+      assert.are.same({ "main" }, patterns)
+      assert.are.equal("global", source)
+    end)
+  end)
+
+  describe("decide() — C2 state-changing matrix", function()
+    local stub = require("luassert.stub")
+    local gg2 = load_with_home("/tmp")
+    local current_branch_stub
+    local _git_module = gg2._git
+
+    before_each(function()
+      current_branch_stub = stub.new(_git_module, "current_branch")
+      stub.new(_git_module, "origin_head_branch").returns(nil)
+    end)
+
+    after_each(function()
+      _git_module.current_branch:revert()
+      _git_module.origin_head_branch:revert()
+      gg2._reset_config_cache()
+    end)
+
+    it("ALLOWS state-changing verb on a feature branch", function()
+      current_branch_stub.returns("feat/x")
+      -- Use default config (protected_branches = main, master)
+      -- inherited from claude/scripts/hooks/git-guard.yaml… but in
+      -- tests we don't load that file (HOME=/tmp). Stub the config
+      -- explicitly.
+      gg2.load_config = function()
+        return { protected_branches = { "main", "master" } }
+      end
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git commit -m foo" },
+      })
+      assert.are.equal("allow", d, r)
+    end)
+
+    it("ASKS for state-changing verb on a protected branch", function()
+      current_branch_stub.returns("main")
+      gg2.load_config = function()
+        return { protected_branches = { "main", "master" } }
+      end
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git commit -m foo" },
+      })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("protected branch"))
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("ASKS when current branch matches ask_branch_patterns", function()
+      current_branch_stub.returns("release/1.0")
+      gg2.load_config = function()
+        return {
+          protected_branches = { "main" },
+          ask_branch_patterns = { "release/*" },
+        }
+      end
+      -- `git commit` hinges on current-branch (no refspec for C3 to
+      -- override on). C2's ask_branch_pattern path should fire.
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git commit -m foo" },
+      })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("ask_branch_patterns") or r:find("release/1.0"))
+    end)
+
+    it("ASKS when current branch is unavailable (detached HEAD)", function()
+      current_branch_stub.returns(nil)
+      gg2.load_config = function()
+        return { protected_branches = { "main" } }
+      end
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git rebase main" },
+      })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("not on a branch") or r:find("detached"))
+    end)
+
+    it("ASKS for non-state-changing gated verbs (C1 fallback)", function()
+      current_branch_stub.returns("feat/x")
+      gg2.load_config = function()
+        return { protected_branches = { "main" } }
+      end
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git clean -fd" },
+      })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("C1 fallback") or r:find("gated"))
+    end)
+
+    it("compound: state-changing on protected leg wins over feature leg", function()
+      current_branch_stub.returns("main")
+      gg2.load_config = function()
+        return { protected_branches = { "main" } }
+      end
+      -- `git status` is safe, `git commit` is state-changing on main
+      local d, r = gg2.decide({
+        cwd = "/repo",
+        tool_input = { command = "git status && git commit -m foo" },
+      })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("protected") or r:find("commit"))
+    end)
+
+    it("per_repo override is consulted", function()
+      current_branch_stub.returns("DEV")
+      gg2.load_config = function()
+        return {
+          protected_branches = { "main", "master" },
+          per_repo = {
+            { match = "/home/hactar/SmartStore_Base", protected_branches = { "DEV" } },
+          },
+        }
+      end
+      local d, r = gg2.decide({
+        cwd = "/home/hactar/SmartStore_Base",
+        tool_input = { command = "git commit -m x" },
+      })
+      assert.are.equal("ask", d, r)
+      assert.is_truthy(r:find("DEV"))
+    end)
+  end)
+
+  -- ── C3 (bi0.3) — ref-rewriting denylist + refspec parsing ──
+
+  describe("parse_push_refspec()", function()
+    local gg3 = load_with_home("/tmp")
+
+    it("extracts dst from src:dst form", function()
+      local dst, del = gg3.parse_push_refspec("feat:main")
+      assert.are.equal("main", dst)
+      assert.is_false(del)
+    end)
+
+    it("extracts dst from bare-src form (dst = src)", function()
+      local dst, del = gg3.parse_push_refspec("feature")
+      assert.are.equal("feature", dst)
+      assert.is_false(del)
+    end)
+
+    it("flags :dst (delete) form", function()
+      local dst, del = gg3.parse_push_refspec(":main")
+      assert.are.equal("main", dst)
+      assert.is_true(del)
+    end)
+
+    it("strips leading + (force-push marker) before parsing", function()
+      local dst, del = gg3.parse_push_refspec("+feat:main")
+      assert.are.equal("main", dst)
+      assert.is_false(del)
+    end)
+
+    it("returns nil on malformed input", function()
+      assert.is_nil((gg3.parse_push_refspec("")))
+      assert.is_nil((gg3.parse_push_refspec(nil)))
+      assert.is_nil((gg3.parse_push_refspec("a:b:c")))
+    end)
+  end)
+
+  describe("analyze_push()", function()
+    local gg3 = load_with_home("/tmp")
+    local ctx = { protected = { "main", "master" }, ask_patterns = { "release/*" } }
+
+    it("returns nil for bare push (defer to C2)", function()
+      local d = gg3.analyze_push({}, ctx)
+      assert.is_nil(d)
+    end)
+
+    it("asks for push to '.' (loopback remote)", function()
+      local d, r = gg3.analyze_push({ ".", "master:foo" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("push %."))
+    end)
+
+    it("asks for push --mirror", function()
+      local d, r = gg3.analyze_push({ "--mirror", "origin" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("mirror"))
+    end)
+
+    it("asks for push --delete on protected ref", function()
+      local d, r = gg3.analyze_push({ "--delete", "origin", "main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("delete"))
+    end)
+
+    it("asks for push --delete on any ref (delete is always dangerous)", function()
+      local d, r = gg3.analyze_push({ "--delete", "origin", "old-feat" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("delete"))
+    end)
+
+    it("asks for :dst (delete refspec)", function()
+      local d, r = gg3.analyze_push({ "origin", ":main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("deletes a remote ref"))
+    end)
+
+    it("asks for src:protected dst", function()
+      local d, r = gg3.analyze_push({ "origin", "feat:main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for force-push without protected dst (history rewrite)", function()
+      local d, r = gg3.analyze_push({ "--force", "origin", "feature" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("ALLOWS explicit feature-only refspec (don't fall through to C2)", function()
+      local d, r = gg3.analyze_push({ "origin", "feature" }, ctx)
+      assert.are.equal("allow", d)
+      assert.is_truthy(r:find("explicit refspec"))
+    end)
+
+    it("ALLOWS multiple feature-only refspecs", function()
+      local d = gg3.analyze_push({ "origin", "feat-a", "feat-b" }, ctx)
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks for ask_branch_patterns hit (release/*)", function()
+      local d, r = gg3.analyze_push({ "origin", "feat:release/1.0" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("release/1.0"))
+    end)
+  end)
+
+  describe("analyze_branch()", function()
+    local gg3 = load_with_home("/tmp")
+    local ctx = { protected = { "main" }, ask_patterns = {} }
+
+    it("returns nil for benign branch invocations", function()
+      assert.is_nil((gg3.analyze_branch({ "new-feature" }, ctx)))
+    end)
+
+    it("asks for branch -f (always asks, regardless of target)", function()
+      local d, r = gg3.analyze_branch({ "-f", "feature", "HEAD" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for branch -d <protected>", function()
+      local d, r = gg3.analyze_branch({ "-d", "main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for branch -D <protected>", function()
+      local d = gg3.analyze_branch({ "-D", "main" }, ctx)
+      assert.are.equal("ask", d)
+    end)
+
+    it("does NOT escalate branch -d <feature> (deferred to generic gated)", function()
+      assert.is_nil((gg3.analyze_branch({ "-d", "old-feature" }, ctx)))
+    end)
+
+    it("asks for branch --move touching protected ref", function()
+      local d, r = gg3.analyze_branch({ "--move", "main", "old-main" }, ctx)
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+  end)
+
+  describe("decide() — C3 ref-rewriting matrix (integrated)", function()
+    local stub = require("luassert.stub")
+    local gg3 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg3._git, "current_branch").returns("feat/x")
+      stub.new(gg3._git, "origin_head_branch").returns(nil)
+      gg3.load_config = function()
+        return {
+          protected_branches = { "main", "master" },
+          ask_branch_patterns = { "release/*" },
+        }
+      end
+    end)
+
+    after_each(function()
+      gg3._git.current_branch:revert()
+      gg3._git.origin_head_branch:revert()
+      gg3._reset_config_cache()
+    end)
+
+    it("asks for `git push origin :main`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin :main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("deletes"))
+    end)
+
+    it("asks for `git push origin feat:main`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin feat:main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("allows `git push origin feature` from a protected current branch (refspec overrides)", function()
+      gg3._git.current_branch:revert()
+      stub.new(gg3._git, "current_branch").returns("main")
+      local d = gg3.decide({ cwd = "/repo", tool_input = { command = "git push origin feature" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks for `git push .` (loopback)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push . feat:foo" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("push %."))
+    end)
+
+    it("asks for `git push --force` even on feature", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push --force origin feature" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for `git branch -f` (always)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git branch -f main HEAD" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("force"))
+    end)
+
+    it("asks for `git branch -D main` (protected delete)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git branch -D main" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("main"))
+    end)
+
+    it("asks for `git update-ref refs/heads/main HEAD`", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git update-ref refs/heads/main HEAD" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("update%-ref"))
+    end)
+
+    it("asks for `git fetch . main:other` (local-loopback fetch)", function()
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git fetch . main:other" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("fetch %."))
+    end)
+
+    it("falls through to C2 for bare `git push` (no refspec)", function()
+      gg3._git.current_branch:revert()
+      stub.new(gg3._git, "current_branch").returns("main")
+      local d, r = gg3.decide({ cwd = "/repo", tool_input = { command = "git push" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("protected branch"))
+    end)
+  end)
+
+  -- ── C4 (bi0.4) — branch-naming enforcement ──
+
+  describe("new_branch_name()", function()
+    local gg4 = load_with_home("/tmp")
+
+    it("extracts NAME from checkout -b NAME", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-b", "feat/x" }))
+    end)
+
+    it("extracts NAME from checkout -B NAME (force-create)", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-B", "feat/x" }))
+    end)
+
+    it("extracts NAME from switch -c NAME / -C NAME", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("switch", { "-c", "feat/x" }))
+      assert.are.equal("feat/x", gg4.new_branch_name("switch", { "-C", "feat/x" }))
+    end)
+
+    it("ignores start-point arg (NAME is the first positional after -b/-c)", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("checkout", { "-b", "feat/x", "origin/main" }))
+    end)
+
+    it("returns nil if checkout/switch has no -b/-B/-c/-C", function()
+      assert.is_nil(gg4.new_branch_name("checkout", { "feat/x" })) -- plain checkout (no create)
+      assert.is_nil(gg4.new_branch_name("switch", { "feat/x" }))
+    end)
+
+    it("extracts NAME from bare `git branch <name>`", function()
+      assert.are.equal("feat/x", gg4.new_branch_name("branch", { "feat/x" }))
+      assert.are.equal("feat/x", gg4.new_branch_name("branch", { "feat/x", "main" }))
+    end)
+
+    it("returns nil for `git branch -d/-D/-f/--list` (not a create)", function()
+      assert.is_nil(gg4.new_branch_name("branch", { "-d", "feat/x" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "-D", "main" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "-f", "feat/x" }))
+      assert.is_nil(gg4.new_branch_name("branch", { "--list" }))
+    end)
+
+    it("returns nil for non-create verbs", function()
+      assert.is_nil(gg4.new_branch_name("commit", { "-m", "foo" }))
+      assert.is_nil(gg4.new_branch_name("push", { "origin", "feat" }))
+    end)
+  end)
+
+  describe("analyze_new_branch_name()", function()
+    local gg4 = load_with_home("/tmp")
+
+    local function cfg(patterns, on_violation)
+      return { branch_naming = { patterns = patterns, on_violation = on_violation } }
+    end
+
+    it("returns nil if branch_naming is unconfigured", function()
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, {})))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, cfg(nil, nil))))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "-b", "anything" }, cfg({}, nil))))
+    end)
+
+    it("returns 'allow' when the new name matches a pattern (overrides C1 generic-gated)", function()
+      local d, r = gg4.analyze_new_branch_name("checkout", { "-b", "mhaynes/feat/x" }, cfg({ "mhaynes/feat/*" }))
+      assert.are.equal("allow", d)
+      assert.is_truthy(r:find("matches branch_naming pattern"))
+    end)
+
+    it("asks (default on_violation) when the name does NOT match", function()
+      local d, r = gg4.analyze_new_branch_name("checkout", { "-b", "random-name" }, cfg({ "mhaynes/feat/*" }))
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("denies when on_violation = deny", function()
+      local d, r = gg4.analyze_new_branch_name("switch", { "-c", "random-name" }, cfg({ "mhaynes/feat/*" }, "deny"))
+      assert.are.equal("deny", d)
+      assert.is_truthy(r:find("denied"))
+    end)
+
+    it("checks multiple patterns (any match → conforming → allow)", function()
+      local d = gg4.analyze_new_branch_name("branch", { "dev/foo/phase-1" }, cfg({ "mhaynes/feat/*", "dev/*/phase-*" }))
+      assert.are.equal("allow", d)
+    end)
+
+    it("supports `re:` regex patterns", function()
+      local d = gg4.analyze_new_branch_name("checkout", { "-b", "v123" }, cfg({ "re:v%d+" }))
+      assert.are.equal("allow", d)
+      local d2, _ = gg4.analyze_new_branch_name("checkout", { "-b", "vXYZ" }, cfg({ "re:v%d+" }))
+      assert.are.equal("ask", d2)
+    end)
+
+    it("returns nil for non-create forms even with naming configured", function()
+      assert.is_nil((gg4.analyze_new_branch_name("commit", { "-m", "x" }, cfg({ "feat/*" }))))
+      assert.is_nil((gg4.analyze_new_branch_name("checkout", { "main" }, cfg({ "feat/*" }))))
+    end)
+  end)
+
+  describe("decide() — C4 branch-naming integrated", function()
+    local stub = require("luassert.stub")
+    local gg4 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg4._git, "current_branch").returns("feat/x")
+      stub.new(gg4._git, "origin_head_branch").returns(nil)
+      gg4.load_config = function()
+        return {
+          protected_branches = { "main" },
+          branch_naming = {
+            patterns = { "mhaynes/feat/*", "dev/*/phase-*" },
+            on_violation = "ask",
+          },
+        }
+      end
+    end)
+
+    after_each(function()
+      gg4._git.current_branch:revert()
+      gg4._git.origin_head_branch:revert()
+      gg4._reset_config_cache()
+    end)
+
+    it("allows `git checkout -b mhaynes/feat/widget`", function()
+      local d = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b mhaynes/feat/widget" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("asks `git checkout -b random-name`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b random-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("asks `git switch -c bad-name`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git switch -c bad-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("asks bare `git branch <bad-name>`", function()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git branch bad-name" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("does not match"))
+    end)
+
+    it("denies when on_violation = deny", function()
+      gg4.load_config = function()
+        return {
+          protected_branches = { "main" },
+          branch_naming = { patterns = { "mhaynes/feat/*" }, on_violation = "deny" },
+        }
+      end
+      gg4._reset_config_cache()
+      local d, r = gg4.decide({ cwd = "/repo", tool_input = { command = "git checkout -b bad-name" } })
+      assert.are.equal("deny", d)
+      assert.is_truthy(r:find("denied"))
+    end)
+  end)
+
+  -- ── C5 (bi0.5) — git -C / --git-dir / --work-tree always-ask (global half) ──
+
+  describe("detect_git_path_flags()", function()
+    local gg5 = load_with_home("/tmp")
+
+    it("detects -C <dir>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "-C", "/repo", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("-C", pf[1].flag)
+      assert.are.equal("/repo", pf[1].target)
+    end)
+
+    it("detects --git-dir <path>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--git-dir", "/r/.git", "log" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--git-dir", pf[1].flag)
+      assert.are.equal("/r/.git", pf[1].target)
+    end)
+
+    it("detects --git-dir=<path> (joined form)", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--git-dir=/r/.git", "log" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--git-dir", pf[1].flag)
+      assert.are.equal("/r/.git", pf[1].target)
+    end)
+
+    it("detects --work-tree <path> and =<path>", function()
+      local pf = gg5.detect_git_path_flags({ "git", "--work-tree", "/wt", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("--work-tree", pf[1].flag)
+      pf = gg5.detect_git_path_flags({ "git", "--work-tree=/wt", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("/wt", pf[1].target)
+    end)
+
+    it("detects multiple path flags in one invocation", function()
+      local pf = gg5.detect_git_path_flags({
+        "git",
+        "--git-dir",
+        "/r/.git",
+        "--work-tree",
+        "/wt",
+        "status",
+      })
+      assert.are.equal(2, #pf)
+    end)
+
+    it("ignores -c key=value (config setter, not a path flag)", function()
+      local pf = gg5.detect_git_path_flags({ "git", "-c", "user.name=x", "status" })
+      assert.are.equal(0, #pf)
+    end)
+
+    it("returns empty for bare `git verb`", function()
+      assert.are.equal(0, #gg5.detect_git_path_flags({ "git", "status" }))
+    end)
+
+    it("returns empty for non-git commands", function()
+      assert.are.equal(0, #gg5.detect_git_path_flags({ "ls", "-la" }))
+    end)
+
+    it("handles env-var prefixes before git", function()
+      local pf = gg5.detect_git_path_flags({ "FOO=bar", "git", "-C", "/repo", "status" })
+      assert.are.equal(1, #pf)
+      assert.are.equal("/repo", pf[1].target)
+    end)
+  end)
+
+  describe("decide() — C5 git -C global-ask integrated", function()
+    local stub = require("luassert.stub")
+    local gg5 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg5._git, "current_branch").returns("feat/x")
+      stub.new(gg5._git, "origin_head_branch").returns(nil)
+    end)
+
+    after_each(function()
+      gg5._git.current_branch:revert()
+      gg5._git.origin_head_branch:revert()
+      gg5._reset_config_cache()
+    end)
+
+    it("ASKS `git -C /repo status` (overrides C1 safe-verb-allow)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/repo", tool_input = { command = "git -C /repo status" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
+      assert.is_truthy(r:find("/repo"))
+    end)
+
+    it("ASKS `git --git-dir=/r/.git log` (overrides safe verb)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git --git-dir=/r/.git log" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("git%-dir"))
+    end)
+
+    it("ASKS `git -C /repo commit` (also overrides C2 default)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git -C /repo commit -m x" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
+    end)
+
+    it("honors options.git_dash_c_policy=allow (falls through to normal classification)", function()
+      gg5.load_config = function()
+        return { options = { git_dash_c_policy = "allow" } }
+      end
+      local d = gg5.decide({ cwd = "/", tool_input = { command = "git -C /repo status" } })
+      assert.are.equal("allow", d) -- status is safe; -C bypass allowed
+    end)
+
+    it("ALLOWS bare `git status` (no -C flag)", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d = gg5.decide({ cwd = "/repo", tool_input = { command = "git status" } })
+      assert.are.equal("allow", d)
+    end)
+
+    it("ASKS compound where any leg uses -C", function()
+      gg5.load_config = function()
+        return {}
+      end
+      local d, r = gg5.decide({ cwd = "/", tool_input = { command = "git status && git -C /other log" } })
+      assert.are.equal("ask", d)
+      assert.is_truthy(r:find("%-C"))
+    end)
+  end)
+
+  -- ── C6 (bi0.6) — project-local allowed_git_dirs override ──
+
+  describe("resolve_path()", function()
+    local gg6 = load_with_home("/tmp")
+
+    it("resolves absolute paths as-is (post-normalize)", function()
+      assert.are.equal("/repo", gg6.resolve_path("/repo", "/anywhere"))
+      assert.are.equal("/etc/foo", gg6.resolve_path("/etc/bar/../foo", "/anywhere"))
+    end)
+
+    it("resolves relative entries against base_cwd", function()
+      assert.are.equal("/home/proj/sub", gg6.resolve_path("sub", "/home/proj"))
+      assert.are.equal("/home/proj", gg6.resolve_path(".", "/home/proj"))
+    end)
+
+    it("returns nil for empty/missing inputs", function()
+      assert.is_nil(gg6.resolve_path(nil, "/x"))
+      assert.is_nil(gg6.resolve_path("", "/x"))
+      assert.is_nil(gg6.resolve_path("rel", nil))
+    end)
+  end)
+
+  describe("target_in_allowed_dirs()", function()
+    local gg6 = load_with_home("/tmp")
+
+    it("matches exact entry", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "/home/proj/sub" }, "/anywhere"))
+    end)
+
+    it("matches prefix with `/` boundary", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub/inner", { "/home/proj/sub" }, "/anywhere"))
+      assert.is_false(gg6.target_in_allowed_dirs("/home/proj/subfork", { "/home/proj/sub" }, "/anywhere"))
+    end)
+
+    it("resolves relative entries against cwd", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "sub" }, "/home/proj"))
+      assert.is_false(gg6.target_in_allowed_dirs("/home/proj/other", { "sub" }, "/home/proj"))
+    end)
+
+    it("treats `.` as the project root", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj", { "." }, "/home/proj"))
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "." }, "/home/proj"))
+    end)
+
+    it("supports glob entries", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/repos/repo-x", { "re:/repos/.*" }, "/anywhere"))
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/.worktrees/x", { "/home/proj/.worktrees/*" }, "/anywhere"))
+    end)
+
+    it("returns false for empty/missing target or empty allowlist", function()
+      assert.is_false(gg6.target_in_allowed_dirs(nil, { "/repo" }, "/x"))
+      assert.is_false(gg6.target_in_allowed_dirs("/repo", {}, "/x"))
+      assert.is_false(gg6.target_in_allowed_dirs("/repo", nil, "/x"))
+    end)
+  end)
+
+  describe("decide() — C6 project allowed_git_dirs integrated", function()
+    local stub = require("luassert.stub")
+    local gg6 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg6._git, "current_branch").returns("feat/x")
+      stub.new(gg6._git, "origin_head_branch").returns(nil)
+      gg6.load_config = function()
+        return {}
+      end
+      gg6._reset_project_config_cache()
+    end)
+
+    after_each(function()
+      gg6._git.current_branch:revert()
+      gg6._git.origin_head_branch:revert()
+      gg6._reset_config_cache()
+      gg6._reset_project_config_cache()
+    end)
+
+    local function with_project_cfg(project_cfg, fn)
+      gg6.load_project_config = function()
+        return project_cfg
+      end
+      gg6._reset_project_config_cache()
+      fn()
+    end
+
+    it("ALLOWS `git -C /home/proj/sub` when sub is in allowed_git_dirs", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub status" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+
+    it("ALLOWS via relative allowlist entry (`sub` resolved against cwd)", function()
+      with_project_cfg({ allowed_git_dirs = { "sub" } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub log" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+
+    it("ASKS when -C target is NOT in allowed_git_dirs", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /elsewhere status" },
+        })
+        assert.are.equal("ask", d)
+        assert.is_truthy(r:find("/elsewhere"))
+      end)
+    end)
+
+    it("DENIES out-of-allowlist when hard_deny_out_of_allowlist=true", function()
+      with_project_cfg({
+        allowed_git_dirs = { "/home/proj/sub" },
+        options = { hard_deny_out_of_allowlist = true },
+      }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /elsewhere status" },
+        })
+        assert.are.equal("deny", d)
+        assert.is_truthy(r:find("hard_deny"))
+      end)
+    end)
+
+    it("ASKS when no project config exists (defaults to global C5 ask)", function()
+      gg6.load_project_config = function()
+        return nil
+      end
+      local d = gg6.decide({
+        cwd = "/home/proj",
+        tool_input = { command = "git -C /home/proj/sub status" },
+      })
+      assert.are.equal("ask", d)
+    end)
+
+    it("requires ALL -C targets in a compound to match (one out-of-allowlist → ask)", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub log && git -C /elsewhere status" },
+        })
+        assert.are.equal("ask", d)
+        assert.is_truthy(r:find("/elsewhere"))
+      end)
+    end)
+
+    it("treats `.` in allowlist as the project root", function()
+      with_project_cfg({ allowed_git_dirs = { "." } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj status" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+  end)
+end)

@@ -1,0 +1,64 @@
+# claude/scripts/hooks/justfile — hook-domain install + tests.
+# Imported flat into the project root justfile (ClaudeConfig-zdk / F-just1).
+# Recipes here are directly callable from the project root.
+#
+# Variables (share_dir) are declared in the root justfile and visible
+# via Just's flat-import.
+
+# Install Lua hooks (+ their config) to ${SHARE_DIR}/hooks.
+install-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    install -d -m 0755 "{{share_dir}}/hooks"
+    install -m 0644 claude/scripts/hooks/_lib.lua         "{{share_dir}}/hooks/_lib.lua"
+    install -m 0755 claude/scripts/hooks/config-guard.lua "{{share_dir}}/hooks/config-guard.lua"
+    install -m 0755 claude/scripts/hooks/audit-event.lua  "{{share_dir}}/hooks/audit-event.lua"
+    install -m 0755 claude/scripts/hooks/git-guard.lua    "{{share_dir}}/hooks/git-guard.lua"
+    install -m 0644 claude/scripts/hooks/git-guard.yaml   "{{share_dir}}/hooks/git-guard.yaml"
+    echo "✓ hooks installed:"
+    echo "    {{share_dir}}/hooks/{_lib,config-guard,audit-event,git-guard}.lua"
+    echo "    {{share_dir}}/hooks/git-guard.yaml"
+
+# Reverse install-hooks.
+uninstall-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    declare -a paths=(
+        "{{share_dir}}/hooks/_lib.lua"
+        "{{share_dir}}/hooks/config-guard.lua"
+        "{{share_dir}}/hooks/audit-event.lua"
+        "{{share_dir}}/hooks/git-guard.lua"
+        "{{share_dir}}/hooks/git-guard.yaml"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  rm $f"
+            rm -f "$f"
+        fi
+    done
+    echo "✓ hooks uninstalled"
+
+# Run hook-domain unit tests (busted; tests colocated under tests/).
+# ClaudeConfig-ew7 / F-test1.
+test-hooks:
+    busted --lpath='./claude/scripts/hooks/?.lua' claude/scripts/hooks/tests/
+
+# Verify installed hook files.
+verify-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Verifying hooks install ..."
+    declare -a paths=(
+        "{{share_dir}}/hooks/_lib.lua"
+        "{{share_dir}}/hooks/config-guard.lua"
+        "{{share_dir}}/hooks/audit-event.lua"
+        "{{share_dir}}/hooks/git-guard.lua"
+        "{{share_dir}}/hooks/git-guard.yaml"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  ✓ present: $f"
+        else
+            echo "  ✗ MISSING: $f"
+        fi
+    done

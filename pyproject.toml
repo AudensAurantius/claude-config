@@ -41,9 +41,6 @@ dev = [
 target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
-# WIP file slated for Lua port per DEC-017 / ClaudeConfig-40s.18; excluded
-# rather than tidied so the Lua replacement can land cleanly.
-extend-exclude = ["sandbox/scripts/hooks/config-guard.py"]
 
 [tool.ruff.lint]
 select = [

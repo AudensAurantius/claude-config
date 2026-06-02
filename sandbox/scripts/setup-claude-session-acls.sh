@@ -47,9 +47,15 @@ grant_project_acl() {
     local project="$1"
     case "$project" in
         /*) ;;
-        *) echo "  ✗ --project must be an absolute path: $project" >&2; return 1 ;;
+        *)
+            echo "  ✗ --project must be an absolute path: $project" >&2
+            return 1
+            ;;
     esac
-    [ -d "$project" ] || { echo "  ✗ project dir not found: $project" >&2; return 1; }
+    [ -d "$project" ] || {
+        echo "  ✗ project dir not found: $project" >&2
+        return 1
+    }
 
     # 1. Traversal-only ACL on each ancestor that is not already world-
     #    traversable. A 0755 dir below a 0700 dir is common, so check every
@@ -63,8 +69,8 @@ grant_project_acl() {
         # (sticky+execute); '-' or 'T' (sticky, no execute) means a blocked
         # ancestor that needs a traversal-only ACL.
         if [ -n "$perms" ] && [ "$last" != "x" ] && [ "$last" != "t" ]; then
-            setfacl -m "u:${claude_user}:--x" "$d" \
-                || echo "  warn: could not grant --x on $d (not owner?); traversal may fail" >&2
+            setfacl -m "u:${claude_user}:--x" "$d" ||
+                echo "  warn: could not grant --x on $d (not owner?); traversal may fail" >&2
         fi
         d="$(dirname "$d")"
     done
@@ -74,7 +80,7 @@ grant_project_acl() {
     if getfacl --absolute-names "$project" 2>/dev/null | grep -q "^user:${claude_user}:"; then
         echo "  ✓ ${claude_user} already has an ACL on ${project} (skipped recursive pass)"
     else
-        setfacl -R -m    "u:${claude_user}:rwX" "$project"
+        setfacl -R -m "u:${claude_user}:rwX" "$project"
         setfacl -R -d -m "u:${claude_user}:rwX" "$project"
         echo "  ✓ granted ${claude_user} rwX (recursive + default) on ${project}"
     fi
@@ -86,11 +92,26 @@ project_paths=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -h|--help)  usage; exit 0 ;;
-        --user)     claude_user="$2"; shift 2 ;;
-        --home-dir) home_dir="$2";    shift 2 ;;
-        --project)  project_paths+=("$2"); shift 2 ;;
-        *) echo "setup-claude-session-acls.sh: unknown arg: $1" >&2; exit 1 ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --user)
+            claude_user="$2"
+            shift 2
+            ;;
+        --home-dir)
+            home_dir="$2"
+            shift 2
+            ;;
+        --project)
+            project_paths+=("$2")
+            shift 2
+            ;;
+        *)
+            echo "setup-claude-session-acls.sh: unknown arg: $1" >&2
+            exit 1
+            ;;
     esac
 done
 
@@ -138,7 +159,7 @@ rm -f "$probe"
 if getfacl --absolute-names "$projects_dir" 2>/dev/null | grep -q "^user:${claude_user}:rwx"; then
     echo "✓ ${claude_user} already has rwx on ${projects_dir} (skipped recursive pass)"
 else
-    setfacl -R -m    "u:${claude_user}:rwx" "$projects_dir"
+    setfacl -R -m "u:${claude_user}:rwx" "$projects_dir"
     setfacl -R -d -m "u:${claude_user}:rwx" "$projects_dir"
 fi
 

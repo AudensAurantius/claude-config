@@ -39,9 +39,18 @@
 set -euo pipefail
 
 PROFILE="${1:?usage: claude-sandbox-emit-srt-settings <profile.yaml>}"
-[ -f "$PROFILE" ] || { echo "emit-srt-settings: profile not found: $PROFILE" >&2; exit 1; }
-command -v yq >/dev/null || { echo "emit-srt-settings: yq not on PATH" >&2; exit 1; }
-command -v jq >/dev/null || { echo "emit-srt-settings: jq not on PATH" >&2; exit 1; }
+[ -f "$PROFILE" ] || {
+    echo "emit-srt-settings: profile not found: $PROFILE" >&2
+    exit 1
+}
+command -v yq >/dev/null || {
+    echo "emit-srt-settings: yq not on PATH" >&2
+    exit 1
+}
+command -v jq >/dev/null || {
+    echo "emit-srt-settings: jq not on PATH" >&2
+    exit 1
+}
 
 ACTIVE_PROJECT="${ACTIVE_PROJECT:-$PWD}"
 SANDBOX_HOME="${SANDBOX_HOME:-$HOME}"
