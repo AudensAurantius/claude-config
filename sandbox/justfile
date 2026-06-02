@@ -1,0 +1,95 @@
+# sandbox/justfile — sandbox-domain install + provision + smoke recipes.
+# Imported flat into the project root justfile (ClaudeConfig-zdk / F-just1).
+# Recipes here are directly callable from the project root, prefixed with
+# their domain (`just install-sandbox`, `just provision`, etc.).
+#
+# Variables (prefix, bin_dir, share_dir, profile_dir, etc_dir) are
+# declared in the root justfile and visible via Just's flat-import.
+
+# Install all sandbox-domain artifacts to host paths.
+install-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    install -d -m 0755 "{{bin_dir}}"
+    install -d -m 0755 "{{share_dir}}/scripts"
+    install -d -m 0755 "{{profile_dir}}"
+    install -d -m 0755 "{{etc_dir}}"
+    install -m 0755 sandbox/bin/claude-sandbox                   "{{bin_dir}}/claude-sandbox"
+    install -m 0755 sandbox/bin/claude-sandbox-emit-srt-settings "{{bin_dir}}/claude-sandbox-emit-srt-settings"
+    install -m 0644 sandbox/profiles/default.yaml                "{{profile_dir}}/default.yaml"
+    install -m 0644 claude/settings/managed-settings.json        "{{etc_dir}}/managed-settings.json"
+    install -m 0755 sandbox/scripts/_hooks-manifest.sh           "{{share_dir}}/scripts/_hooks-manifest.sh"
+    install -m 0755 sandbox/scripts/setup-claude-session-acls.sh "{{share_dir}}/scripts/setup-claude-session-acls.sh"
+    install -m 0755 sandbox/scripts/provision-claude-session.sh  "{{share_dir}}/scripts/provision-claude-session.sh"
+    install -m 0755 sandbox/scripts/install-dev-tools.sh         "{{share_dir}}/scripts/install-dev-tools.sh"
+    echo "✓ sandbox installed:"
+    echo "    {{bin_dir}}/claude-sandbox"
+    echo "    {{bin_dir}}/claude-sandbox-emit-srt-settings"
+    echo "    {{profile_dir}}/default.yaml"
+    echo "    {{etc_dir}}/managed-settings.json"
+    echo "    {{share_dir}}/scripts/{_hooks-manifest,setup-claude-session-acls,provision-claude-session,install-dev-tools}.sh"
+
+# Reverse install-sandbox (sandbox artifacts only; does NOT unprovision).
+uninstall-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    declare -a paths=(
+        "{{bin_dir}}/claude-sandbox"
+        "{{bin_dir}}/claude-sandbox-emit-srt-settings"
+        "{{profile_dir}}/default.yaml"
+        "{{etc_dir}}/managed-settings.json"
+        "{{share_dir}}/scripts/_hooks-manifest.sh"
+        "{{share_dir}}/scripts/setup-claude-session-acls.sh"
+        "{{share_dir}}/scripts/provision-claude-session.sh"
+        "{{share_dir}}/scripts/install-dev-tools.sh"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  rm $f"
+            rm -f "$f"
+        fi
+    done
+    echo "✓ sandbox uninstalled"
+
+# Provision claude-session (system user + subuid + ACLs; sudo-mediated).
+provision:
+    @echo "Provisioning claude-session (will prompt for sudo) ..."
+    {{share_dir}}/scripts/provision-claude-session.sh \
+        --acl-script {{share_dir}}/scripts/setup-claude-session-acls.sh
+
+# Reverse `just provision`.
+unprovision:
+    @echo "Un-provisioning claude-session (will prompt for sudo) ..."
+    {{share_dir}}/scripts/provision-claude-session.sh --uninstall \
+        --acl-script {{share_dir}}/scripts/setup-claude-session-acls.sh
+
+# Run the Phase 1 wrapper smoke test (composed + standalone modes).
+smoke:
+    sandbox/scripts/smoke-test.sh
+
+# Verify installed sandbox files + wrapper version.
+verify-sandbox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Verifying sandbox install ..."
+    declare -a paths=(
+        "{{bin_dir}}/claude-sandbox"
+        "{{bin_dir}}/claude-sandbox-emit-srt-settings"
+        "{{profile_dir}}/default.yaml"
+        "{{etc_dir}}/managed-settings.json"
+        "{{share_dir}}/scripts/_hooks-manifest.sh"
+        "{{share_dir}}/scripts/setup-claude-session-acls.sh"
+        "{{share_dir}}/scripts/provision-claude-session.sh"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  ✓ present: $f"
+        else
+            echo "  ✗ MISSING: $f"
+        fi
+    done
+    if [ -x "{{bin_dir}}/claude-sandbox" ]; then
+        echo ""
+        echo "Wrapper version:"
+        "{{bin_dir}}/claude-sandbox" --version 2>&1 | sed 's/^/  /'
+    fi
