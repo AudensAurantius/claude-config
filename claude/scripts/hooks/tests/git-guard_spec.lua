@@ -1001,4 +1001,166 @@ describe("git-guard", function()
       assert.is_truthy(r:find("%-C"))
     end)
   end)
+
+  -- ── C6 (bi0.6) — project-local allowed_git_dirs override ──
+
+  describe("resolve_path()", function()
+    local gg6 = load_with_home("/tmp")
+
+    it("resolves absolute paths as-is (post-normalize)", function()
+      assert.are.equal("/repo", gg6.resolve_path("/repo", "/anywhere"))
+      assert.are.equal("/etc/foo", gg6.resolve_path("/etc/bar/../foo", "/anywhere"))
+    end)
+
+    it("resolves relative entries against base_cwd", function()
+      assert.are.equal("/home/proj/sub", gg6.resolve_path("sub", "/home/proj"))
+      assert.are.equal("/home/proj", gg6.resolve_path(".", "/home/proj"))
+    end)
+
+    it("returns nil for empty/missing inputs", function()
+      assert.is_nil(gg6.resolve_path(nil, "/x"))
+      assert.is_nil(gg6.resolve_path("", "/x"))
+      assert.is_nil(gg6.resolve_path("rel", nil))
+    end)
+  end)
+
+  describe("target_in_allowed_dirs()", function()
+    local gg6 = load_with_home("/tmp")
+
+    it("matches exact entry", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "/home/proj/sub" }, "/anywhere"))
+    end)
+
+    it("matches prefix with `/` boundary", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub/inner", { "/home/proj/sub" }, "/anywhere"))
+      assert.is_false(gg6.target_in_allowed_dirs("/home/proj/subfork", { "/home/proj/sub" }, "/anywhere"))
+    end)
+
+    it("resolves relative entries against cwd", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "sub" }, "/home/proj"))
+      assert.is_false(gg6.target_in_allowed_dirs("/home/proj/other", { "sub" }, "/home/proj"))
+    end)
+
+    it("treats `.` as the project root", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj", { "." }, "/home/proj"))
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/sub", { "." }, "/home/proj"))
+    end)
+
+    it("supports glob entries", function()
+      assert.is_true(gg6.target_in_allowed_dirs("/repos/repo-x", { "re:/repos/.*" }, "/anywhere"))
+      assert.is_true(gg6.target_in_allowed_dirs("/home/proj/.worktrees/x", { "/home/proj/.worktrees/*" }, "/anywhere"))
+    end)
+
+    it("returns false for empty/missing target or empty allowlist", function()
+      assert.is_false(gg6.target_in_allowed_dirs(nil, { "/repo" }, "/x"))
+      assert.is_false(gg6.target_in_allowed_dirs("/repo", {}, "/x"))
+      assert.is_false(gg6.target_in_allowed_dirs("/repo", nil, "/x"))
+    end)
+  end)
+
+  describe("decide() — C6 project allowed_git_dirs integrated", function()
+    local stub = require("luassert.stub")
+    local gg6 = load_with_home("/tmp")
+
+    before_each(function()
+      stub.new(gg6._git, "current_branch").returns("feat/x")
+      stub.new(gg6._git, "origin_head_branch").returns(nil)
+      gg6.load_config = function()
+        return {}
+      end
+      gg6._reset_project_config_cache()
+    end)
+
+    after_each(function()
+      gg6._git.current_branch:revert()
+      gg6._git.origin_head_branch:revert()
+      gg6._reset_config_cache()
+      gg6._reset_project_config_cache()
+    end)
+
+    local function with_project_cfg(project_cfg, fn)
+      gg6.load_project_config = function()
+        return project_cfg
+      end
+      gg6._reset_project_config_cache()
+      fn()
+    end
+
+    it("ALLOWS `git -C /home/proj/sub` when sub is in allowed_git_dirs", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub status" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+
+    it("ALLOWS via relative allowlist entry (`sub` resolved against cwd)", function()
+      with_project_cfg({ allowed_git_dirs = { "sub" } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub log" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+
+    it("ASKS when -C target is NOT in allowed_git_dirs", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /elsewhere status" },
+        })
+        assert.are.equal("ask", d)
+        assert.is_truthy(r:find("/elsewhere"))
+      end)
+    end)
+
+    it("DENIES out-of-allowlist when hard_deny_out_of_allowlist=true", function()
+      with_project_cfg({
+        allowed_git_dirs = { "/home/proj/sub" },
+        options = { hard_deny_out_of_allowlist = true },
+      }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /elsewhere status" },
+        })
+        assert.are.equal("deny", d)
+        assert.is_truthy(r:find("hard_deny"))
+      end)
+    end)
+
+    it("ASKS when no project config exists (defaults to global C5 ask)", function()
+      gg6.load_project_config = function()
+        return nil
+      end
+      local d = gg6.decide({
+        cwd = "/home/proj",
+        tool_input = { command = "git -C /home/proj/sub status" },
+      })
+      assert.are.equal("ask", d)
+    end)
+
+    it("requires ALL -C targets in a compound to match (one out-of-allowlist → ask)", function()
+      with_project_cfg({ allowed_git_dirs = { "/home/proj/sub" } }, function()
+        local d, r = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj/sub log && git -C /elsewhere status" },
+        })
+        assert.are.equal("ask", d)
+        assert.is_truthy(r:find("/elsewhere"))
+      end)
+    end)
+
+    it("treats `.` in allowlist as the project root", function()
+      with_project_cfg({ allowed_git_dirs = { "." } }, function()
+        local d = gg6.decide({
+          cwd = "/home/proj",
+          tool_input = { command = "git -C /home/proj status" },
+        })
+        assert.are.equal("allow", d)
+      end)
+    end)
+  end)
 end)

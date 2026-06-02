@@ -546,6 +546,115 @@ M.ALWAYS_ASK_REF_REWRITE = {
   ["update-ref"] = true,
 }
 
+-- ── C6: project-local git-dir allowlist (Subtlety 2, project half) ──
+
+-- Per-process cache for project configs keyed by cwd. nil = not yet
+-- attempted; false = previously failed (use defaults).
+local _project_config_cache = {}
+
+function M._reset_project_config_cache()
+  _project_config_cache = {}
+end
+
+-- Load project-local config from `<cwd>/.claude-session/hooks/git-guard.yaml`
+-- (preferred, matches our deployment convention) or
+-- `<cwd>/.claude/git-guard.yaml` (handoff's original convention).
+-- Returns the parsed table or nil. Caches per cwd.
+function M.load_project_config(cwd)
+  if type(cwd) ~= "string" or cwd == "" then
+    return nil
+  end
+  if _project_config_cache[cwd] ~= nil then
+    return _project_config_cache[cwd] or nil
+  end
+
+  local candidates = {
+    cwd .. "/.claude-session/hooks/git-guard.yaml",
+    cwd .. "/.claude/git-guard.yaml",
+  }
+  local f, path
+  for _, p in ipairs(candidates) do
+    f = io.open(p, "r")
+    if f then
+      path = p
+      break
+    end
+  end
+  if not f then
+    _project_config_cache[cwd] = false
+    return nil
+  end
+
+  local raw = f:read("*all")
+  f:close()
+  local ok_req, yaml = pcall(require, "lyaml")
+  if not ok_req then
+    io.stderr:write("git-guard: lyaml unavailable; project config ignored\n")
+    _project_config_cache[cwd] = false
+    return nil
+  end
+  local parsed
+  local ok_parse, perr = pcall(function()
+    parsed = yaml.load(raw)
+  end)
+  if not ok_parse or type(parsed) ~= "table" then
+    io.stderr:write(
+      "git-guard: project config parse error at " .. (path or "?") .. " (" .. tostring(perr) .. "); ignoring\n"
+    )
+    _project_config_cache[cwd] = false
+    return nil
+  end
+  _project_config_cache[cwd] = parsed
+  return parsed
+end
+
+-- Resolve a path entry to an absolute, normalized form. Relative entries
+-- are resolved against `base_cwd`.
+function M.resolve_path(entry, base_cwd)
+  if type(entry) ~= "string" or entry == "" then
+    return nil
+  end
+  local p = entry
+  if p:sub(1, 1) ~= "/" then
+    if not base_cwd or base_cwd == "" then
+      return nil
+    end
+    p = base_cwd .. "/" .. p
+  end
+  return lib.normalize_path(p)
+end
+
+-- Check whether `target` (a path passed to git -C / --git-dir / --work-tree)
+-- is covered by `allowed_entries`. Both sides are resolved against `cwd`
+-- and normalized; the comparison supports:
+--   - exact match
+--   - prefix match with `/` boundary (entry "/repo" matches "/repo" or
+--     "/repo/sub", NOT "/repo-fork")
+--   - glob match (via M.match_pattern on the post-normalize string)
+function M.target_in_allowed_dirs(target, allowed_entries, cwd)
+  if not target or type(allowed_entries) ~= "table" then
+    return false
+  end
+  local target_abs = M.resolve_path(target, cwd)
+  if not target_abs then
+    return false
+  end
+  for _, entry in ipairs(allowed_entries) do
+    -- Try as a path first (resolve relative-to-cwd, exact-or-prefix-match).
+    local entry_abs = M.resolve_path(entry, cwd)
+    if entry_abs then
+      if target_abs == entry_abs or target_abs:sub(1, #entry_abs + 1) == entry_abs .. "/" then
+        return true
+      end
+    end
+    -- Then try as a glob (matches the normalized target).
+    if M.match_pattern(target_abs, entry) then
+      return true
+    end
+  end
+  return false
+end
+
 -- ── C5: git -C / --git-dir / --work-tree detection ──
 
 -- Scan a single command's tokens for git-path-redirection flags
@@ -792,31 +901,61 @@ function M.decide(data)
       last_verb = verb
 
       -- C5: git -C / --git-dir / --work-tree always asks at the global
-      -- level (the project hook in C6 will refine to "allow when target
-      -- is in the project's allowed_git_dirs"). Fires BEFORE classify_verb
-      -- so even safe verbs (`git -C /repo status`) ask. Honors
-      -- options.git_dash_c_policy (default ask).
+      -- level (handoff §5.3). C6 refines: when the project's
+      -- allowed_git_dirs covers the target, the ask is upgraded to
+      -- allow; if hard_deny_out_of_allowlist=true, an out-of-allowlist
+      -- target is escalated from ask to deny. Honors
+      -- options.git_dash_c_policy (default ask; "allow" disables the
+      -- whole gate).
       local path_flags = M.detect_git_path_flags(cmd)
       if #path_flags > 0 then
         local cfg = get_config()
         local policy = ((cfg or {}).options or {}).git_dash_c_policy or "ask"
         if policy == "ask" then
-          local pf = path_flags[1]
-          local extras = ""
-          if #path_flags > 1 then
-            extras = string.format(" (and %d more)", #path_flags - 1)
+          -- C6: consult project-local allowed_git_dirs.
+          local project = cwd and M.load_project_config(cwd) or nil
+          local allowed = (project and project.allowed_git_dirs) or {}
+          local hard_deny = (project and project.options and project.options.hard_deny_out_of_allowlist) or false
+
+          local all_targets_allowed = true
+          local first_blocked = nil
+          for _, pf in ipairs(path_flags) do
+            if not M.target_in_allowed_dirs(pf.target, allowed, cwd) then
+              all_targets_allowed = false
+              first_blocked = first_blocked or pf
+            end
           end
-          ref_rewrite_hit = {
-            decision = "ask",
-            reason = string.format(
-              "git-guard: 'git %s' (for verb %q) redirects git to %q%s — global hook always asks (C6 project hook may allow per allowed_git_dirs)",
-              pf.flag,
-              verb,
-              pf.target,
-              extras
-            ),
-          }
-          break
+
+          if all_targets_allowed and #allowed > 0 then
+            -- Every -C / --git-dir / --work-tree target is in the
+            -- project's allowed_git_dirs. C6 override: allow.
+            -- (Record nothing; loop continues to verb classification.)
+          else
+            local pf = first_blocked or path_flags[1]
+            local extras = ""
+            if #path_flags > 1 then
+              extras = string.format(" (and %d more)", #path_flags - 1)
+            end
+            local decision = hard_deny and "deny" or "ask"
+            local kind = hard_deny and "denied (hard_deny_out_of_allowlist)" or "always asks"
+            local hint = "C6 project allowed_git_dirs may allow it"
+            if hard_deny then
+              hint = "hard_deny_out_of_allowlist=true rejects out-of-allowlist targets"
+            end
+            ref_rewrite_hit = {
+              decision = decision,
+              reason = string.format(
+                "git-guard: 'git %s' (for verb %q) redirects git to %q%s — global hook %s (%s)",
+                pf.flag,
+                verb,
+                pf.target,
+                extras,
+                kind,
+                hint
+              ),
+            }
+            break
+          end
         end
         -- policy = "allow" → skip C5; fall through to normal classification.
       end
