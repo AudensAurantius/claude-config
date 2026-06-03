@@ -18,10 +18,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Build Tools",
 ]
-dependencies = []
+dependencies = [
+    "PyYAML>=6.0",
+]
 
-# [project.scripts] — populated as Python tools land (DEC-019). Example shape:
-#   claude-config-emitter = "claude_config.tools.emitter:main"
+# [project.scripts] — populated as Python tools land (DEC-019).
+[project.scripts]
+claude-egress-broker-py = "claude_config.egress_broker.__main__:main"
 
 [build-system]
 requires = ["uv_build>=0.7,<0.8"]
@@ -33,6 +36,7 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.10",
     "pre-commit>=3.0",
+    "types-PyYAML>=6.0",
 ]
 
 # ── Tooling configuration (DEC-022: per-language native testing) ──
