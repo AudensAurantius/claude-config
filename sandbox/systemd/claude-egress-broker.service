@@ -1,0 +1,91 @@
+# claude-egress-broker.service — egress credential broker (DEC-013, DEC-029).
+#
+# Runs as the claude-egress UID with HOME=/home/claude-egress so the
+# pass(1) credential backend can locate its store. Started on demand
+# via claude-egress-broker.socket; the inherited fd is adopted via
+# the LISTEN_FDS protocol.
+#
+# Hardening: this service handles secrets; the sandbox-facing risk is
+# any sandbox prompt-injection finding its way through the broker to
+# the credential store or the network. The unit applies all the
+# standard systemd containment knobs that don't break the broker's
+# real workload (UDS socket adoption + outbound HTTPS).
+
+[Unit]
+Description=Claude egress credential broker
+Documentation=file:///etc/claude-config/egress-policy/README.md
+Requires=claude-egress-broker.socket
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# ExecStart placeholder. The current binary is the Python reference
+# broker (slice 3 of ciw.2); slice 6 ships the Go production binary
+# at /usr/local/sbin/claude-egress-broker and an operator chooses
+# which to point at via a drop-in. Sample uses the Python ref for
+# parity with slice-3 testing.
+ExecStart=/usr/local/bin/claude-egress-broker-py \
+    --policy-dir /etc/claude-config/egress-policy \
+    --peer-uid CLAUDE_SESSION_UID
+# Slice-5 caveat: CLAUDE_SESSION_UID is the literal string the installer
+# substitutes at install time (or via systemctl edit) with the host's
+# claude-session UID. The reference broker requires --peer-uid because
+# SO_PEERCRED is its auth gate.
+
+Type=simple
+# Python reference does not implement sd_notify. Go production will
+# switch to Type=notify with NotifyAccess=main.
+
+User=claude-egress
+Group=claude-egress
+WorkingDirectory=/home/claude-egress
+Environment=HOME=/home/claude-egress
+Environment=GNUPGHOME=/home/claude-egress/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/claude-egress/.password-store
+
+# Runtime dir: /run/claude-egress/ owned by claude-egress, mode 0755
+# (so claude-session can traverse to reach the socket bound by the
+# .socket unit). Cleaned up on stop.
+RuntimeDirectory=claude-egress
+RuntimeDirectoryMode=0755
+
+# ── Containment ────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Outbound HTTPS + the UDS need AF_UNIX, AF_INET, AF_INET6.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Standard system-service syscall set; covers our needs.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Read-only access to policy files; everything else /etc is invisible.
+ReadOnlyPaths=/etc/claude-config
+
+# Process resource caps — sized for a low-throughput credential broker,
+# not a data-plane HTTPS proxy. Production tuning belongs in a drop-in.
+LimitNOFILE=4096
+TasksMax=64
+
+# Restart policy: do come back if we crash, but slow enough that we
+# don't pin a CPU on a crashloop. (StartLimit* lives in [Unit].)
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

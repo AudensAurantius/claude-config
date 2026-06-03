@@ -1,0 +1,33 @@
+# claude-egress-broker.socket — socket-activated UDS for the egress broker.
+#
+# Per DEC-013 / DEC-029, the broker listens on a Unix-domain socket
+# that lives at /run/claude-egress/broker.sock. The socket is owned by
+# root with group claude-session and mode 0660 — only claude-session
+# (and root) can connect. SO_PEERCRED inside the broker is the
+# authoritative auth gate; these perms are belt-and-suspenders.
+#
+# Activation: systemd binds and listens; the broker is spawned on
+# first connection. This means the broker process can be restarted
+# without dropping connections in flight.
+
+[Unit]
+Description=Claude egress broker UDS
+Documentation=file:///etc/claude-config/egress-policy/README.md
+PartOf=claude-egress-broker.service
+
+[Socket]
+ListenStream=/run/claude-egress/broker.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=claude-session
+DirectoryMode=0755
+# RemoveOnStop is the systemd default for AF_UNIX; declaring it
+# explicitly so the absence isn't taken as "leak the socket on stop".
+RemoveOnStop=yes
+# One unaccepted connection at a time is plenty for the reference
+# broker (synchronous one-request-per-connection). Production Go
+# broker can raise this once it implements async I/O.
+Backlog=16
+
+[Install]
+WantedBy=sockets.target
