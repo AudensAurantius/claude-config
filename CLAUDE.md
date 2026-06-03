@@ -185,9 +185,29 @@ Inside a sandboxed session, `claude-session` sees:
 - **Commits:** Conventional Commits
   (`feat/fix/docs/refactor/test/chore`), with `Co-Authored-By` trailer
   when the change was AI-assisted.
-- **Branches:** feature branches off `main`; merge via PR-style review
-  even for solo work, because once Phase 6 ships agents will be
-  proposing changes via the same mechanism.
+- **Branches:** feature branches off `main` are the default. Agents
+  are allowed to operate on `main` directly for merges, hotfixes,
+  beads-state commits, and similar bookkeeping — the "branches by
+  default" rule is for *new feature work*, not a hard prohibition
+  against ever touching `main`.
+- **No orphan feature branches.** Any implementation work that lives
+  on a feature branch must be either (a) merged to `main` before the
+  session that produced it ends, or (b) accompanied by an explicit
+  `review` / `merge` bead that **blocks** the next dependent
+  implementation bead. The graph must reflect the reality on disk —
+  if `ciw.2` can't proceed until `ciw.1`'s branch is merged, that
+  dependency belongs in `bd`, not in a future Claude's head. Why this
+  matters: bd's `ready` queue and `dep cycles` check are the
+  authoritative "what can I work on" surface; a feature branch
+  detached from a bead is invisible to that surface, and the next
+  session will branch off a `main` that's missing prerequisites it
+  has no way to know about.
+- **Supplemental strategy — short branch lifetimes.** The review-bead
+  pattern handles the legitimate case where a branch must persist
+  across sessions (incubation, external review, large WIP). For
+  routine work, the simpler rule "land it before the session ends"
+  avoids the problem entirely. Prefer that path; reserve review beads
+  for branches that genuinely need to outlive their session.
 - **Scopes:** `sandbox`, `skills`, `agents`, `commands`, `settings`,
   `installer`, `docs`, `migration`.
 - **Decision records:** any choice that affects file layout, runtime
