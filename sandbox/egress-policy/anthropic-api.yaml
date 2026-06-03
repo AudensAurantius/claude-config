@@ -1,0 +1,32 @@
+# Egress broker policy: Anthropic Messages API.
+#
+# Lets the sandbox call the Anthropic API via the broker, which attaches
+# the operator's organization API key. The sandbox never sees the key.
+#
+# See sandbox/egress-policy/README.md for the schema reference.
+
+alias: anthropic-api
+
+upstream:
+  host: api.anthropic.com
+  port: 443
+  scheme: https
+
+credential:
+  backend: pass
+  path: claude-egress/anthropic/api-key
+  attach:
+    type: header
+    name: x-api-key
+
+constraints:
+  methods: [POST, GET]
+  paths:
+    - /v1/messages
+    - /v1/messages/batches*
+    - /v1/messages/count_tokens
+    - /v1/models*
+  max_request_bytes: 10485760  # 10 MiB
+  timeout_seconds: 600         # batch + long-context completions
+  block_request_headers:
+    - anthropic-version        # broker pins the version it tested against
