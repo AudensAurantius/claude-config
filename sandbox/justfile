@@ -21,13 +21,14 @@ install-sandbox:
     install -m 0755 sandbox/scripts/_hooks-manifest.sh           "{{share_dir}}/scripts/_hooks-manifest.sh"
     install -m 0755 sandbox/scripts/setup-claude-session-acls.sh "{{share_dir}}/scripts/setup-claude-session-acls.sh"
     install -m 0755 sandbox/scripts/provision-claude-session.sh  "{{share_dir}}/scripts/provision-claude-session.sh"
+    install -m 0755 sandbox/scripts/provision-claude-egress.sh   "{{share_dir}}/scripts/provision-claude-egress.sh"
     install -m 0755 sandbox/scripts/install-dev-tools.sh         "{{share_dir}}/scripts/install-dev-tools.sh"
     echo "✓ sandbox installed:"
     echo "    {{bin_dir}}/claude-sandbox"
     echo "    {{bin_dir}}/claude-sandbox-emit-srt-settings"
     echo "    {{profile_dir}}/default.yaml"
     echo "    {{etc_dir}}/managed-settings.json"
-    echo "    {{share_dir}}/scripts/{_hooks-manifest,setup-claude-session-acls,provision-claude-session,install-dev-tools}.sh"
+    echo "    {{share_dir}}/scripts/{_hooks-manifest,setup-claude-session-acls,provision-claude-session,provision-claude-egress,install-dev-tools}.sh"
 
 # Reverse install-sandbox (sandbox artifacts only; does NOT unprovision).
 uninstall-sandbox:
@@ -41,6 +42,7 @@ uninstall-sandbox:
         "{{share_dir}}/scripts/_hooks-manifest.sh"
         "{{share_dir}}/scripts/setup-claude-session-acls.sh"
         "{{share_dir}}/scripts/provision-claude-session.sh"
+        "{{share_dir}}/scripts/provision-claude-egress.sh"
         "{{share_dir}}/scripts/install-dev-tools.sh"
     )
     for f in "${paths[@]}"; do
@@ -51,17 +53,32 @@ uninstall-sandbox:
     done
     echo "✓ sandbox uninstalled"
 
-# Provision claude-session (system user + subuid + ACLs; sudo-mediated).
-provision:
+# Provision claude-session + claude-egress (DEC-013); sudo-mediated.
+provision: provision-egress
     @echo "Provisioning claude-session (will prompt for sudo) ..."
     {{share_dir}}/scripts/provision-claude-session.sh \
         --acl-script {{share_dir}}/scripts/setup-claude-session-acls.sh
 
-# Reverse `just provision`.
-unprovision:
+# Reverse `just provision` (egress policy/cred dirs preserved as operator data).
+unprovision: unprovision-egress
     @echo "Un-provisioning claude-session (will prompt for sudo) ..."
     {{share_dir}}/scripts/provision-claude-session.sh --uninstall \
         --acl-script {{share_dir}}/scripts/setup-claude-session-acls.sh
+
+# Provision claude-egress UID + policy/credential dirs (DEC-013).
+provision-egress:
+    @echo "Provisioning claude-egress (will prompt for sudo) ..."
+    {{share_dir}}/scripts/provision-claude-egress.sh
+
+# Reverse `just provision-egress` (preserves operator-authored policy/cred files).
+unprovision-egress:
+    @echo "Un-provisioning claude-egress (will prompt for sudo) ..."
+    {{share_dir}}/scripts/provision-claude-egress.sh --uninstall
+
+# Reverse `just provision-egress` AND remove policy/credential dirs + contents.
+unprovision-egress-purge:
+    @echo "Un-provisioning claude-egress with --purge (will prompt for sudo) ..."
+    {{share_dir}}/scripts/provision-claude-egress.sh --uninstall --purge
 
 # Run the Phase 1 wrapper smoke test (composed + standalone modes).
 smoke:
@@ -131,6 +148,7 @@ verify-sandbox:
         "{{share_dir}}/scripts/_hooks-manifest.sh"
         "{{share_dir}}/scripts/setup-claude-session-acls.sh"
         "{{share_dir}}/scripts/provision-claude-session.sh"
+        "{{share_dir}}/scripts/provision-claude-egress.sh"
     )
     for f in "${paths[@]}"; do
         if [ -e "$f" ]; then
