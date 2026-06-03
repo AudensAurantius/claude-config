@@ -1860,3 +1860,92 @@ not for one-time session init.
 **Revision possible:** if mise gains a session-init equivalent of
 `[hooks.enter]`, the boundary between session-init and per-call
 hooks may collapse to a single surface.
+
+---
+
+### DEC-029: Egress broker — wire protocol, principal model, and topology refinements (2026-06-02)
+
+**Decision:** Refines DEC-013's egress-broker design with four
+concrete commitments made during ClaudeConfig-ciw.2 design
+discussion:
+
+1. **Wire protocol uses named credential aliases, not URLs.** The
+   sandbox calls the broker UDS with `{alias, request-shape}`. The
+   broker hardcodes per-alias upstream destinations (e.g., alias
+   `anthropic-api` always routes to `api.anthropic.com`). The
+   sandbox cannot influence destination by varying the request URL.
+2. **`claude-egress` is a service principal, never a session
+   principal.** No Claude binary on its `PATH`, no Anthropic OAuth
+   credentials at any path it can read, no subuid mapping,
+   `nologin` shell. Sudoers wrapper allows `sudo -u claude-session`
+   only — not the reverse.
+3. **Broker and SNI proxy are siblings under `claude-egress`, not
+   chained.** Sandbox-side routing (per-tool: this curl uses the
+   broker, that one uses the proxy) is what unifies UX; the two
+   mediation layers stay independent. A chained design (proxy
+   classifies and forwards-with-injection to broker) requires TLS
+   termination in the proxy, which requires CA-cert-in-sandbox —
+   the trust-root cost DEC-013's Alternatives already rejected.
+4. **Host capability set + per-project required-aliases manifest.**
+   `/etc/claude-config/egress-policy/<alias>.yaml` files declare
+   the host's capability set (which aliases exist on this machine,
+   what upstream each routes to, what credential it attaches).
+   Per-project profile/sidecar declares `required_aliases` +
+   `required_sni_allowlist`. The wrapper fails session start if the
+   host is missing a required capability. Decouples versioned
+   project config from host-operator policy.
+
+**Context:** DEC-013 established the two-pattern egress mediation
+strategy at the architectural level but left implementation details
+open. ClaudeConfig-ciw.2 (broker implementation) forced the four
+decisions above. Each preserves DEC-013's central invariant —
+*destination control sits outside the sandbox's reach* — but several
+attractive shortcuts (URL-as-input, chained topology) would erode
+it; this DEC records the rejections.
+
+**Alternatives considered:**
+
+- *URL-as-input wire protocol.* Rejected — it lets the sandbox
+  decide which credential attaches to which destination by varying
+  its request URL, defeating the destination-by-credential
+  invariant. Attackers who compromise the sandbox would then need
+  only to craft a request URL the broker accepts.
+- *`claude-egress` reuses claude-session's home or runs Claude.*
+  Rejected — collapses the privilege boundary the two-UID split
+  exists to enforce. claude-egress holds credentials claude-session
+  must not see; running anything Claude-managed under that UID
+  gives prompt injection a path to it.
+- *Chained broker behind proxy.* Rejected per the CA-cert-in-
+  sandbox cost above. (Operationally tempting — single ingress
+  point for sandbox HTTPS — but architecturally identical to the
+  full-MITM proxy DEC-013 rejected.)
+- *Single host-wide policy file.* Rejected for the operator/
+  project split: host operators decide what credentials exist;
+  project authors declare which they need. Mixing the two
+  responsibilities in one file forces either (a) projects editing
+  host config to declare requirements, or (b) host operators
+  reading project configs to provision. Both break in obvious ways.
+- *Credential injection at the broker via env vars passed by the
+  sandbox.* Rejected — same defect as URL-as-input. The sandbox
+  must not influence credential attachment.
+
+**Consequences:**
+
+- Broker policy files live at `/etc/claude-config/egress-policy/
+  <alias>.yaml`, mode `0640 root:claude-egress`. Provisioning
+  layout already created by ciw.1.
+- Per-project manifest schema gains `required_aliases:` (list of
+  strings) and `required_sni_allowlist:` (list of FQDN globs).
+  Wrapper resolves these against host policy at session start.
+- Sudoers wrapper for the `claude-egress` → `claude-session`
+  direction must NOT exist; only the reverse is permitted, and
+  only for diagnostics (no shell, no env passthrough).
+- The credential backend (DEC-013 left this open) lands as `pass(1)`
+  under `/home/claude-egress/.password-store` with GPG-encrypted
+  store; passphrase unlock via `systemd-ask-password` at boot,
+  gpg-agent caches for service lifetime. Recorded here rather than
+  in a separate DEC because it's an implementation detail of
+  DEC-013's broker, not an independent architectural choice.
+- Future ECH-driven obsolescence of SNI proxy (DEC-013 sunset path)
+  doesn't touch the broker; ECH only affects the uncredentialed
+  proxy side.
