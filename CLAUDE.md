@@ -29,15 +29,27 @@ This repo's contents are source-of-truth; the installer deploys them to
 canonical host locations. The repository is self-contained: chezmoi's
 role contracts to cloning the repo and invoking `just install`.
 
+Host-side dev tooling is managed by [mise](https://mise.jdx.dev): tool
+versions are pinned in `mise.toml` (committed); per-machine overrides
+live in `mise.local.toml` (gitignored, see `mise.local.toml.example`).
+Bootstrap on a fresh clone:
+
 ```bash
 git clone <remote> ~/Source/claude-config
 cd ~/Source/claude-config
+mise install               # provisions Python, Go, LuaJIT, stylua, shfmt,
+                           # lua-language-server, shellcheck, cue, bats;
+                           # seeds .luarocks/ with lyaml + lua-cjson + busted
 just install               # deploys to canonical locations; non-destructive by default
 just install-test          # deploy to /tmp/claude-sandbox-test (sanity check, no real deploy)
 just uninstall             # reverse install (does NOT unprovision claude-session)
 just provision             # create claude-session user + subuid + ACLs (sudo)
 just                       # list all recipes (sync / lint / fmt / test / smoke / check / …)
 ```
+
+Build deps for `mise install`'s luarocks step: a C toolchain + libyaml-dev
+(`apt install build-essential libyaml-dev`). Without these, the luarocks
+seeding fails non-fatally; Lua tests will error loudly when run.
 
 Quality gates (DEC-022; per-language native tools, orchestrated by `just`):
 
@@ -70,6 +82,8 @@ claude-config/
 ├── CLAUDE.md                       # this file
 ├── DECISION_LOG.md                 # architectural decisions with rationale
 ├── justfile                        # polyglot orchestrator (install map, lint/test/build recipes; DEC-021)
+├── mise.toml                       # host-side dev tool version pins (ClaudeConfig-2s3.6)
+├── mise.local.toml.example         # template for per-machine overrides (mise.local.toml gitignored)
 ├── pyproject.toml                  # uv-managed Python project (DEC-019)
 ├── claude/                         # Claude Code config — installed under ~/.claude/
 │   ├── CLAUDE.md.snippet           # marker-block content for ~/.claude/CLAUDE.md
