@@ -4,18 +4,29 @@
 #
 # Creates the claude-egress system account (separate top-level UID,
 # distinct from claude-session — a compromised claude-session must
-# not tamper with proxy policy or eavesdrop on broker plaintext) and
-# scaffolds the two policy/credential directories the broker and
-# SNI proxy will read at runtime:
+# not tamper with proxy policy or eavesdrop on broker plaintext),
+# scaffolds the policy/credential directories the broker and SNI
+# proxy will read at runtime, and scaffolds the broker's credential-
+# backend home (pass(1) + GPG, per DEC-029):
 #
 #   /etc/claude-config/egress-policy/   broker + proxy policy
-#   /etc/claude-config/credentials/     per-credential files (broker)
+#   /etc/claude-config/credentials/     per-credential files (proxy/legacy)
+#   /home/claude-egress/                broker's home (pass + GPG)
+#   /home/claude-egress/.password-store empty pass store
+#   /home/claude-egress/.gnupg          empty GPG home
 #
-# Both directories are root-owned with group claude-egress and mode
-# 0750. Files written into them should be mode 0640 (root:claude-
-# egress) — the broker/proxy can read but not write, and only the
-# operator (root) can author policy. No sudoers entry for the
-# claude-egress user.
+# Policy/credential dirs are root-owned, group claude-egress, mode
+# 0750. Files within should be 0640 (root:claude-egress). The home
+# directory and its dotdirs are 0700 owner claude-egress.
+#
+# Per DEC-029, claude-egress is a service principal: nologin shell,
+# no Claude binary on its PATH, no sudoers entry permitting it to
+# spawn anything. The reverse direction — claude-egress -> claude-
+# session — is also forbidden.
+#
+# The GPG key and pass store contents are NOT created by this script
+# (they require interactive passphrase entry); operator workflow is
+# documented in the "Next steps" output.
 #
 # Idempotent: re-runs are no-ops once provisioned.
 # Reversible: `--uninstall` removes the user. Operator-curated files
@@ -86,6 +97,9 @@ fi
 policy_dir="/etc/claude-config/egress-policy"
 creds_dir="/etc/claude-config/credentials"
 etc_root="/etc/claude-config"
+egress_home="/home/claude-egress"
+pass_store="${egress_home}/.password-store"
+gpg_home="${egress_home}/.gnupg"
 
 # ── Privilege escalation ─────────────────────────────────────────────────────
 # useradd + chown + /etc writes all require root. Re-exec under sudo
@@ -112,18 +126,28 @@ fi
 do_install() {
     echo "Provisioning egress user '${egress_user}' ..."
 
-    # 1. Create system user (idempotent). No home directory: the broker
-    # and proxy will be systemd services with explicit WorkingDirectory;
-    # no need for a writable $HOME. nologin shell + system UID range.
+    # 1. Create system user (idempotent). Home directory is required:
+    # the broker uses pass(1) under ${egress_home}/.password-store and
+    # gpg-agent in ${egress_home}/.gnupg. nologin shell + system UID
+    # range — claude-egress is a service principal, not a login user
+    # (DEC-029).
     if id -u "$egress_user" >/dev/null 2>&1; then
         echo "  ✓ user '${egress_user}' already exists (uid=$(id -u "$egress_user"))"
+        # Migrate an existing pre-broker provisioning (home was /nonexistent
+        # in earlier ciw.1 deployments) to the new home location. usermod is
+        # a no-op when the home already matches.
+        current_home="$(getent passwd "$egress_user" | cut -d: -f6)"
+        if [ "$current_home" != "$egress_home" ]; then
+            usermod --home "$egress_home" "$egress_user"
+            echo "  ✓ migrated home: ${current_home} -> ${egress_home}"
+        fi
     else
         useradd \
             --system \
+            --home-dir "$egress_home" \
             --no-create-home \
-            --home-dir /nonexistent \
             --shell /usr/sbin/nologin \
-            --comment "Claude Code egress mediation principal (DEC-013)" \
+            --comment "Claude Code egress mediation principal (DEC-013, DEC-029)" \
             "$egress_user"
         echo "  ✓ created user '${egress_user}' (uid=$(id -u "$egress_user"))"
     fi
@@ -143,16 +167,46 @@ do_install() {
     install -d -m 0750 -o root -g "$egress_user" "$creds_dir"
     echo "  ✓ ${creds_dir}/ (0750 root:${egress_user})"
 
+    # 3. Scaffold the broker's home + pass + GPG dirs (ciw.2). Empty
+    # dirs only — the GPG key and pass store contents must be created
+    # interactively by the operator because they require passphrase
+    # entry.
+    install -d -m 0700 -o "$egress_user" -g "$egress_user" "$egress_home"
+    echo "  ✓ ${egress_home}/ (0700 ${egress_user}:${egress_user})"
+
+    install -d -m 0700 -o "$egress_user" -g "$egress_user" "$pass_store"
+    echo "  ✓ ${pass_store}/ (0700 ${egress_user}:${egress_user})"
+
+    install -d -m 0700 -o "$egress_user" -g "$egress_user" "$gpg_home"
+    echo "  ✓ ${gpg_home}/ (0700 ${egress_user}:${egress_user})"
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""
-    echo "Next steps (Phase 1.5):"
-    echo "  - ClaudeConfig-ciw.2 will install claude-egress-broker"
-    echo "    (Unix-socket credential broker) and its systemd unit."
-    echo "  - ClaudeConfig-ciw.3 will install claude-egress-proxy"
-    echo "    (SNI-inspecting passthrough proxy) and its systemd unit."
-    echo "  - Operator authors policy files under ${policy_dir}/ and"
-    echo "    credential files under ${creds_dir}/ (mode 0640 root:${egress_user})."
+    echo "Next steps (operator, interactive):"
+    echo ""
+    echo "  1. Generate a GPG key for ${egress_user} (passphrase required):"
+    echo "       sudo -u ${egress_user} -H gpg --homedir ${gpg_home} --generate-key"
+    echo "     Note the key id printed at the end."
+    echo ""
+    echo "  2. Initialize pass(1) against that key:"
+    echo "       sudo -u ${egress_user} -H \\"
+    echo "         env GNUPGHOME=${gpg_home} PASSWORD_STORE_DIR=${pass_store} \\"
+    echo "         pass init <gpg-key-id>"
+    echo ""
+    echo "  3. Insert each credential the broker policy references. For the"
+    echo "     anthropic-api alias shipped with claude-config:"
+    echo "       sudo -u ${egress_user} -H \\"
+    echo "         env GNUPGHOME=${gpg_home} PASSWORD_STORE_DIR=${pass_store} \\"
+    echo "         pass insert claude-egress/anthropic/api-key"
+    echo ""
+    echo "  4. Install policy files (samples ship under sandbox/egress-policy/):"
+    echo "       sudo install -m 0640 -o root -g ${egress_user} \\"
+    echo "         <repo>/sandbox/egress-policy/<alias>.yaml \\"
+    echo "         ${policy_dir}/<alias>.yaml"
+    echo ""
+    echo "  5. After ciw.2 broker is built, enable the systemd units (created"
+    echo "     in slice 5 of ciw.2)."
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
@@ -173,8 +227,8 @@ do_uninstall() {
     fi
 
     if [ "$purge" -eq 1 ]; then
-        # Operator opt-in to destroy policy + credential files.
-        for d in "$policy_dir" "$creds_dir"; do
+        # Operator opt-in to destroy policy + credential files + GPG/pass store.
+        for d in "$policy_dir" "$creds_dir" "$egress_home"; do
             if [ -d "$d" ]; then
                 rm -rf "$d"
                 echo "  ✓ purged ${d}/"
@@ -187,8 +241,9 @@ do_uninstall() {
             echo "  ✓ removed empty ${etc_root}/"
         fi
     else
-        if [ -d "$policy_dir" ] || [ -d "$creds_dir" ]; then
-            echo "  • policy + credential dirs preserved (operator data);"
+        if [ -d "$policy_dir" ] || [ -d "$creds_dir" ] || [ -d "$egress_home" ]; then
+            echo "  • policy/credential dirs and ${egress_home}/ preserved"
+            echo "    (operator data including GPG keys and pass store);"
             echo "    re-run with --purge to remove them."
         fi
     fi
