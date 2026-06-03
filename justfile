@@ -31,9 +31,11 @@
 prefix      := env_var_or_default("PREFIX",      "/usr/local")
 user_config := env_var_or_default("USER_CONFIG", env_var("HOME") + "/.config")
 bin_dir     := env_var_or_default("BIN_DIR",     prefix + "/bin")
+sbin_dir    := env_var_or_default("SBIN_DIR",    prefix + "/sbin")
 share_dir   := env_var_or_default("SHARE_DIR",   prefix + "/share/claude-sandbox")
 profile_dir := env_var_or_default("PROFILE_DIR", user_config + "/claude-sandbox/profiles")
 etc_dir     := env_var_or_default("ETC_DIR",     "/etc/claude-code")
+systemd_dir := env_var_or_default("SYSTEMD_DIR", "/etc/systemd/system")
 
 # ── Imports (flat-merge of per-domain sub-justfiles) ──
 

@@ -162,3 +162,61 @@ verify-sandbox:
         echo "Wrapper version:"
         "{{bin_dir}}/claude-sandbox" --version 2>&1 | sed 's/^/  /'
     fi
+
+# ── Egress broker (Go production binary; ClaudeConfig-1ic slice 6) ──
+
+# Build the Go egress broker binary into sandbox/broker/bin/ (gitignored).
+build-egress-broker:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd sandbox/broker
+    mkdir -p bin
+    go build -trimpath -ldflags='-s -w' -o bin/claude-egress-broker ./cmd/claude-egress-broker
+    sz=$(wc -c < bin/claude-egress-broker)
+    echo "✓ built sandbox/broker/bin/claude-egress-broker (${sz} bytes)"
+
+# Install the Go egress broker binary + systemd units. Sudo-mediated.
+install-egress-broker: build-egress-broker
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Installing claude-egress-broker (will prompt for sudo) ..."
+    sudo install -d -m 0755 "{{sbin_dir}}"
+    sudo install -d -m 0755 "{{systemd_dir}}"
+    sudo install -m 0755 sandbox/broker/bin/claude-egress-broker  "{{sbin_dir}}/claude-egress-broker"
+    sudo install -m 0644 sandbox/systemd/claude-egress-broker.socket  "{{systemd_dir}}/claude-egress-broker.socket"
+    sudo install -m 0644 sandbox/systemd/claude-egress-broker.service "{{systemd_dir}}/claude-egress-broker.service"
+    echo "✓ installed:"
+    echo "    {{sbin_dir}}/claude-egress-broker"
+    echo "    {{systemd_dir}}/claude-egress-broker.{socket,service}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Substitute CLAUDE_SESSION_UID in the service unit:"
+    echo "       sudo systemctl edit claude-egress-broker.service   # add ExecStart drop-in"
+    echo "  2. sudo systemctl daemon-reload"
+    echo "  3. sudo systemctl enable --now claude-egress-broker.socket"
+
+# Reverse install-egress-broker (operator must `systemctl disable --now` first).
+uninstall-egress-broker:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Uninstalling claude-egress-broker (will prompt for sudo) ..."
+    declare -a paths=(
+        "{{sbin_dir}}/claude-egress-broker"
+        "{{systemd_dir}}/claude-egress-broker.socket"
+        "{{systemd_dir}}/claude-egress-broker.service"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  rm $f"
+            sudo rm -f "$f"
+        fi
+    done
+    echo "✓ claude-egress-broker uninstalled (operator should run: sudo systemctl daemon-reload)"
+
+# Run Go test suite for the egress broker.
+test-egress-broker:
+    cd sandbox/broker && go test ./...
+
+# Run go vet across the broker module.
+vet-egress-broker:
+    cd sandbox/broker && go vet ./...

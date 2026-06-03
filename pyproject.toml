@@ -23,8 +23,11 @@ dependencies = [
 ]
 
 # [project.scripts] — populated as Python tools land (DEC-019).
-[project.scripts]
-claude-egress-broker-py = "claude_config.egress_broker.__main__:main"
+# The claude-egress-broker-py script was retired when the Go production
+# broker landed (ClaudeConfig-1ic); the Python reference is preserved
+# read-only under sandbox/reference/egress-broker-python/ and is no
+# longer pip-installed. Operators who want to run the reference can
+# invoke it directly: python -m egress_broker --policy-dir ... .
 
 [build-system]
 requires = ["uv_build>=0.7,<0.8"]
@@ -45,6 +48,8 @@ dev = [
 target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
+# Frozen Python reference broker is preserved read-only; do not lint.
+extend-exclude = ["sandbox/reference"]
 
 [tool.ruff.lint]
 select = [
@@ -75,6 +80,8 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 files = ["src", "tests"]
+# Frozen Python reference broker is preserved read-only; do not type-check.
+exclude = ["^sandbox/reference/"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
