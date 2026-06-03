@@ -20,22 +20,24 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# ExecStart placeholder. The current binary is the Python reference
-# broker (slice 3 of ciw.2); slice 6 ships the Go production binary
-# at /usr/local/sbin/claude-egress-broker and an operator chooses
-# which to point at via a drop-in. Sample uses the Python ref for
-# parity with slice-3 testing.
-ExecStart=/usr/local/bin/claude-egress-broker-py \
+# The Go production broker (slice 6 of ciw.2). CLAUDE_SESSION_UID is
+# the literal string the installer substitutes at install time (or via
+# `systemctl edit claude-egress-broker.service`) with the host's
+# claude-session UID. --peer-uid is required: SO_PEERCRED is the
+# broker's auth gate.
+#
+# Operators who want to run the Python reference instead can drop in:
+#     ExecStart=
+#     ExecStart=/usr/local/bin/claude-egress-broker-py \
+#         --policy-dir /etc/claude-config/egress-policy \
+#         --peer-uid <uid>
+# and switch Type back to simple.
+ExecStart=/usr/local/sbin/claude-egress-broker \
     --policy-dir /etc/claude-config/egress-policy \
     --peer-uid CLAUDE_SESSION_UID
-# Slice-5 caveat: CLAUDE_SESSION_UID is the literal string the installer
-# substitutes at install time (or via systemctl edit) with the host's
-# claude-session UID. The reference broker requires --peer-uid because
-# SO_PEERCRED is its auth gate.
 
-Type=simple
-# Python reference does not implement sd_notify. Go production will
-# switch to Type=notify with NotifyAccess=main.
+Type=notify
+NotifyAccess=main
 
 User=claude-egress
 Group=claude-egress
