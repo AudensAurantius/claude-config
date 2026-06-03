@@ -7,6 +7,12 @@
 # Local environment (machine-specific secrets and paths)
 .envrc
 
+# mise per-machine overrides (mise.toml is committed; this is local-only)
+mise.local.toml
+
+# LuaRocks project-local tree (seeded by mise enter hook)
+.luarocks/
+
 # bv (beads viewer) local config and caches
 .bv/
 

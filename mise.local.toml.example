@@ -1,0 +1,20 @@
+# mise.local.toml.example — per-machine overrides for claude-config.
+#
+# Copy to mise.local.toml (gitignored) and edit as needed. mise merges
+# this on top of mise.toml; [tools] entries here win, [env] values are
+# merged with locals taking precedence on conflict.
+#
+# Use cases:
+#   - pin to a different patch when your host's mise has a stale catalog
+#   - shadow a tool with a system install for debugging
+#   - export env vars only meaningful on this machine
+#
+# Examples (uncomment + adapt):
+
+# [tools]
+# python = "3.12.12"          # downgrade for a specific debugging session
+# go     = "system"           # use whatever `go` is on PATH (not mise's pin)
+
+# [env]
+# DEBUG = "1"
+# CLAUDE_CONFIG_DEV_VERBOSE = "1"

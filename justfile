@@ -6,10 +6,16 @@
 # sync). Per-domain install + provision + smoke + per-domain verify
 # recipes live in their respective sub-justfiles, imported flat below.
 #
+# First-time setup (after clone):
+#   mise install               # provision host-side tools per mise.toml
+#                              # (Python, Go, LuaJIT, stylua, shfmt,
+#                              #  lua-language-server, shellcheck, cue,
+#                              #  bats; seeds .luarocks/ with lyaml +
+#                              #  lua-cjson + busted)
+#
 # Common usage:
 #   just                       # list recipes
 #   just sync                  # uv sync the dev .venv
-#   just dev-tools             # install stylua + shfmt + lua-language-server
 #   just check                 # all quality gates (lint + fmt + test + …)
 #   just install               # deploy all domains to canonical host paths
 #   just install-test          # deploy to /tmp/claude-sandbox-test (no real deploy)
@@ -46,10 +52,11 @@ default:
 sync:
     uv sync
 
-# Install host-side dev tools (stylua, shfmt, lua-language-server) into
-# ~/.local/. Idempotent. ClaudeConfig-b7x.
-dev-tools:
-    ./sandbox/scripts/install-dev-tools.sh
+# Host-side dev tools are managed by mise (mise.toml). On first clone,
+# run `mise install` to provision stylua, shfmt, lua-language-server,
+# etc. The install-dev-tools.sh script is retained for claude-session
+# provisioning only (sandbox/scripts/provision-claude-session.sh
+# step 7b) — host devs should not invoke it directly.
 
 # Lint Python (ruff + mypy)
 lint:

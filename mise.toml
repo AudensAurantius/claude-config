@@ -1,0 +1,72 @@
+# claude-config mise.toml — host-side dev tool versions (ClaudeConfig-2s3.6).
+#
+# Sole source of truth for host development tooling versions. Pinned to
+# precise <major>.<minor>.<patch> so different machines + different
+# moments-in-time install the same binaries. Bumping a pin is an
+# explicit, reviewable change.
+#
+# Per-machine overrides live in mise.local.toml (gitignored); see
+# mise.local.toml.example.
+#
+# Scope: HOST-SIDE only. claude-session runtime provisioning is still
+# apt-based for Lua + heredoc-built for Node/srt (see
+# sandbox/scripts/provision-claude-session.sh). Evaluating mise for
+# claude-session is a separate, follow-up bead (ClaudeConfig-2s3.7).
+
+[tools]
+# Languages
+python = "3.12.13"                   # matches .python-version + pyproject.toml requires-python
+go     = "1.26.4"                    # Phase 1.5 egress broker (ClaudeConfig-ciw.2)
+luajit = "2.1.1744318430"            # DEC-017 fast-path hooks; tracks rolling timestamp release
+
+# Quality-gate tools
+shellcheck         = "0.11.0"
+shfmt              = "3.13.1"
+stylua             = "2.5.2"
+lua-language-server = "3.18.2"
+
+# Validation + config languages
+cue  = "0.16.1"                      # YAML + sidecar schema validation (future: ClaudeConfig-wy9.1)
+
+# Test runners
+bats = "1.13.0"                      # shell-test runner; aspirational coverage (sandbox bats tests)
+# busted is the Lua test runner — installed via luarocks (see [hooks.enter]),
+# not directly available as a mise plugin.
+
+[settings]
+# Auto-create/activate .venv via uv when pyproject.toml is present.
+python.uv_venv_auto = true
+
+# Skip compiling Python from source; use prebuilt binaries
+# (python-build-standalone) for fast installs.
+python.compile = false
+
+[env]
+# Project-local LuaRocks tree (seeded by [hooks.enter] below). Drives
+# `require()` lookups for the Lua libraries used by claude/scripts/hooks/
+# (lyaml, lua-cjson, busted). System-wide Lua paths are deliberately
+# excluded — host development uses the mise-managed LuaJIT + project-
+# local .luarocks/, with no fallback to apt-shipped /usr/share/lua/.
+LUA_PATH = "{{config_root}}/.luarocks/share/lua/5.1/?.lua;{{config_root}}/.luarocks/share/lua/5.1/?/init.lua;{{config_root}}/?.lua;;"
+LUA_CPATH = "{{config_root}}/.luarocks/lib/lua/5.1/?.so;;"
+
+# Surface project-local rocks binaries (busted, etc.) on PATH.
+_.path = ["{{config_root}}/.luarocks/bin"]
+
+[hooks]
+# Fires on direnv enter (via .envrc → mise activation) and on `mise install`.
+# Keeps the dev environment in sync without a manual ritual:
+#   1. install/refresh pinned tools
+#   2. uv sync (rebuilds .venv if pyproject.toml or uv.lock changed)
+#   3. seed project-local .luarocks/ tree with Lua deps (busted, lyaml,
+#      lua-cjson). apt's luarocks is reused; --tree pins it project-local.
+#      Failure is non-fatal — devs without libyaml-dev or a C toolchain
+#      can still work on non-Lua surfaces; Lua tests will fail loudly
+#      when run (which is the right signal).
+enter = """
+mise install -q
+uv sync --quiet
+[ -d .luarocks/lib/luarocks/rocks-5.1/busted ] || luarocks --tree=.luarocks --lua-version=5.1 install busted >/dev/null 2>&1 || true
+[ -d .luarocks/lib/luarocks/rocks-5.1/lyaml ]  || luarocks --tree=.luarocks --lua-version=5.1 install lyaml  >/dev/null 2>&1 || true
+[ -d .luarocks/lib/luarocks/rocks-5.1/lua-cjson ] || luarocks --tree=.luarocks --lua-version=5.1 install lua-cjson >/dev/null 2>&1 || true
+"""
