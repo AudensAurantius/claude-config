@@ -3,13 +3,20 @@ cross-cutting:
 - ClaudeConfig-h1z
 - ClaudeConfig-0by
 egress:
+- ClaudeConfig-bd5
 - ClaudeConfig-ciw.3
 - ClaudeConfig-40s.15.5
+- ClaudeConfig-ck4
+- ClaudeConfig-r4v
+- ClaudeConfig-7wi
+- ClaudeConfig-jkk
+- ClaudeConfig-2xd
 research:
 - J121-1aj
 - J121-2ou
 - J121-6o9
 - J121-crk
+- ClaudeConfig-3fq
 review:
 - J121-y0i
 sandbox-wrapper:
