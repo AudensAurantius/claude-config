@@ -67,8 +67,5 @@
       "Edit(//home/hactar/Source/claude-config/**)",
       "Read(//home/hactar/Source/claude-config/**)"
     ]
-  },
-  "enabledPlugins": {
-    "claude-mem@thedotmack": true
   }
 }
