@@ -2022,3 +2022,67 @@ implementation strategy for the ClientHello peek.
 - ECH adoption breaks SNI inspection at the protocol level, not the
   library level. The peek code's lifetime is bounded by ECH
   rollout; `ClaudeConfig-ciw.6` tracks the sunset.
+
+### DEC-031: claude-mem capture posture — global-on with denylist opt-out (2026-06-04)
+
+**Decision:** Enable the claude-mem plugin globally by default and gate
+unwanted projects out via claude-mem's own `CLAUDE_MEM_EXCLUDED_PROJECTS`
+glob denylist, rather than the prior model of disabling globally and
+opting individual projects in.
+
+**Context:** The earlier posture (DEC-era default `enabledPlugins:
+{"claude-mem@thedotmack": false}` in the chezmoi-managed global
+`~/.claude/settings.json`, re-enabled per project) was chosen to conserve
+tokens. Two findings forced a re-evaluation:
+
+1. **Project-scoped `enabledPlugins` does not register plugin hooks.**
+   Verified 2026-06-04 across the original session and a clean fresh
+   relaunch: a project-level `enabledPlugins: {"claude-mem@thedotmack":
+   true}` boots the plugin's MCP server (its `mcp-search` tools appear)
+   but never registers its `SessionStart` (context injection) or
+   `PostToolUse` (observation capture) hooks. The DB confirmed zero
+   observations captured in any project after the global disable. So the
+   opt-in model could deliver neither read (auto-injected memory) nor
+   write (fresh observations) for the very project that wanted them —
+   it was structurally broken, not merely misconfigured.
+
+2. **The token cost it was avoiding is small.** claude-mem records no
+   billed-token usage locally, so generation cost was modeled from the
+   measured call count (≈ one generation per observation, ~150/day on
+   active days), the source-confirmed per-call input cap
+   (`MAX_PAYLOAD_CHARS = 16 KiB ≈ 4 K tokens`), and output (~366 tokens
+   avg). Result: ~3–5 M tokens / 14 days, i.e. **~2–3% of non-cached
+   main-session token volume, ~0.1% once cache-reads are counted**, and
+   sub-1% in dollars (generation runs on Haiku/Sonnet via tier routing,
+   main work on Opus). `discovery_tokens` in the DB is a *savings*
+   metric, not a cost, and was explicitly not used as the numerator.
+
+**Alternatives:**
+
+- *Keep global-off + port the read+write hooks per project* (standalone
+  `SessionStart`/`PostToolUse`/`Stop` hooks calling the worker's HTTP
+  API). Fails closed (no spend by default) and would have been the
+  token-purist choice — but rejected: it buys back only ~2–3% of
+  non-cached tokens at the cost of ~3 custom hooks coupled to the
+  worker's HTTP API *and* the version-pinned bundled scripts. That is
+  the exact fragility that had already broken the `claude-mem` shell
+  alias (hard-coded `…/12.1.4/…` path). Not worth the maintenance for
+  the savings.
+- *Stay global-off, accept stale memory.* Rejected: read-only memory
+  without capture goes stale; the user confirmed write-side freshness is
+  the whole point.
+
+**Consequences:**
+
+- Chezmoi `modify_settings.json` now sets `enabledPlugins:
+  {"claude-mem@thedotmack": true}`; the redundant project override in
+  `claude-config/.claude/settings.json` is removed.
+- Per-project opt-out is native and lives in
+  `~/.claude-mem/settings.json` (`CLAUDE_MEM_EXCLUDED_PROJECTS`,
+  comma-separated globs matched against full path and basename), driven
+  by the rewritten `/claude-mem-audit` skill. The denylist is fail-open:
+  new projects capture by default until explicitly excluded — acceptable
+  given the measured cost.
+- The denylist has **no allowlist counterpart** in claude-mem, so an
+  "only these projects" posture is not expressible; if that is ever
+  wanted, the per-project hook port above becomes the fallback.
