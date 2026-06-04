@@ -3,7 +3,6 @@ cross-cutting:
 - ClaudeConfig-h1z
 - ClaudeConfig-0by
 egress:
-- ClaudeConfig-ciw.2
 - ClaudeConfig-ciw.3
 - ClaudeConfig-40s.15.5
 research:
