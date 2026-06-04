@@ -139,7 +139,10 @@ runtime — edits go through the repo, then `just install`.
 | `sandbox/scripts/provision-claude-session.sh` | invoked via `just provision` after install | (provisioning script) | Creates user, sets ACLs, provisions Lua/Node toolchains |
 | `sandbox/scripts/provision-claude-egress.sh` | invoked via `just provision-egress` (chained into `just provision`) | (provisioning script) | Creates claude-egress UID + `/etc/claude-config/{egress-policy,credentials}/` (DEC-013) |
 | `sandbox/broker/` (Go source) → `sandbox/broker/bin/claude-egress-broker` | `/usr/local/sbin/claude-egress-broker` (via `just install-egress-broker`) | Build + sudo install | Production egress broker (DEC-013, DEC-029); Python reference frozen at `sandbox/reference/egress-broker-python/` |
-| `sandbox/systemd/claude-egress-broker.{socket,service}` | `/etc/systemd/system/` (via `just install-egress-broker`) | sudo install | Type=notify, socket-activated; operator substitutes CLAUDE_SESSION_UID via `systemctl edit` |
+| `sandbox/scripts/prime-egress-broker.sh` | `/usr/local/sbin/prime-egress-broker` (via `just install-egress-broker`) | sudo install | Coordinator-side gpg-agent primer (ClaudeConfig-bd5); seeds sentinel, runs `gpg-preset-passphrase` |
+| `sandbox/scripts/claude-egress-broker-healthcheck.sh` | `/usr/local/sbin/claude-egress-broker-healthcheck` (via `just install-egress-broker`) | sudo install | ExecStartPre sentinel-decrypt; refuses broker start when agent cache is cold |
+| `sandbox/etc/gpg-agent.conf` | `/home/claude-egress/.gnupg/gpg-agent.conf` (via `just provision-egress`) | Install via provision script | Enables `allow-preset-passphrase` + long cache TTL for the primed agent |
+| `sandbox/systemd/claude-egress-broker.{socket,service}` | `/etc/systemd/system/` (via `just install-egress-broker`) | sudo install | Type=notify, socket-activated; operator substitutes CLAUDE_SESSION_UID via `systemctl edit`; service ExecStartPre validates primed gpg-agent |
 
 Behavior categories (see [DEC-004](DECISION_LOG.md#dec-004-installer-based-deployment-with-non-destructive-defaults-2026-05-04)):
 

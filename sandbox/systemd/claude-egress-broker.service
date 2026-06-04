@@ -32,6 +32,13 @@ StartLimitBurst=5
 #         --policy-dir /etc/claude-config/egress-policy \
 #         --peer-uid <uid>
 # and switch Type back to simple.
+# ExecStartPre: verify gpg-agent has the broker key's passphrase
+# cached (ClaudeConfig-bd5). The coordinator-side primer
+# (prime-egress-broker) seeds a sentinel ciphertext and primes the
+# agent; this decrypt fails fast if the cache is cold, so the broker
+# never starts in a state where every credential lookup would 500.
+ExecStartPre=/usr/local/sbin/claude-egress-broker-healthcheck
+
 ExecStart=/usr/local/sbin/claude-egress-broker \
     --policy-dir /etc/claude-config/egress-policy \
     --peer-uid CLAUDE_SESSION_UID

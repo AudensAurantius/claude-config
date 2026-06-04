@@ -180,6 +180,20 @@ do_install() {
     install -d -m 0700 -o "$egress_user" -g "$egress_user" "$gpg_home"
     echo "  ✓ ${gpg_home}/ (0700 ${egress_user}:${egress_user})"
 
+    # 3b. Install gpg-agent.conf so the agent accepts preset passphrases
+    # from the coordinator-side primer (ClaudeConfig-bd5). The conf
+    # source-of-truth lives in the repo at sandbox/etc/gpg-agent.conf;
+    # find it relative to this script.
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    gpg_agent_conf_src="${script_dir%/scripts}/etc/gpg-agent.conf"
+    if [ -f "$gpg_agent_conf_src" ]; then
+        install -m 0600 -o "$egress_user" -g "$egress_user" \
+            "$gpg_agent_conf_src" "${gpg_home}/gpg-agent.conf"
+        echo "  ✓ ${gpg_home}/gpg-agent.conf (0600 ${egress_user}:${egress_user})"
+    else
+        echo "  ! gpg-agent.conf source not found at ${gpg_agent_conf_src}; skipping" >&2
+    fi
+
     echo ""
     echo "✓ Provisioning complete."
     echo ""
@@ -254,18 +268,30 @@ do_install() {
     echo "         <repo>/sandbox/egress-policy/<alias>.yaml \\"
     echo "         ${policy_dir}/<alias>.yaml"
     echo ""
-    echo "  6. Enable the broker systemd units (installed via"
-    echo "     'just install-egress-broker'):"
+    echo "  6. Install the broker binary + helpers + systemd units:"
+    echo "       just install-egress-broker"
+    echo ""
+    echo "  7. Substitute CLAUDE_SESSION_UID in the service unit:"
+    echo "       sudo systemctl edit --full claude-egress-broker.service"
+    echo "       # replace the literal 'CLAUDE_SESSION_UID' with"
+    echo "       # \$(id -u claude-session)"
     echo "       sudo systemctl daemon-reload"
+    echo ""
+    echo "  8. Prime the agent with the broker key's passphrase. This"
+    echo "     fetches the passphrase from your personal pass store and"
+    echo "     hands it to claude-egress's gpg-agent; it never lands on"
+    echo "     disk. Also creates the sentinel that ExecStartPre will"
+    echo "     decrypt as a hot-cache health check:"
+    echo "       sudo prime-egress-broker"
+    echo ""
+    echo "  9. Enable and start the broker:"
     echo "       sudo systemctl enable --now claude-egress-broker.socket"
     echo ""
-    echo "     NOTE: until ClaudeConfig-bd5 (coordinator-primed gpg-agent)"
-    echo "     or ClaudeConfig-2xd (systemd-creds + TPM) lands, a"
-    echo "     passphrase-protected key will cause ExecStart to fail —"
-    echo "     gpg has no TTY, no primed agent, and no pinentry path. The"
-    echo "     broker is installed and socket-activated but non-functional"
-    echo "     until one of those slices closes. See bd memory"
-    echo "     'claude-egress-broker-passphrase-gap-the-claude-egress'."
+    echo "     If the broker fails to start with 'sentinel decrypt failed',"
+    echo "     re-run prime-egress-broker (the agent cache evaporates"
+    echo "     across gpg-agent restarts, not broker restarts). See bd"
+    echo "     memory 'claude-egress-broker-passphrase-gap-the-claude-egress'"
+    echo "     for the architectural context."
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────

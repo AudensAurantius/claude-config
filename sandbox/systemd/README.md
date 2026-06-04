@@ -63,3 +63,33 @@ The most consequential rules are operational, not in the unit:
 3. Policy files at `/etc/claude-config/egress-policy/` are
    `0640 root:claude-egress` — the broker can read, nothing else can
    read; only root can write.
+
+## Priming gpg-agent (ClaudeConfig-bd5)
+
+The broker decrypts credentials via pass(1), which delegates to
+gpg-agent. The broker key is passphrase-protected (per DEC-029) and
+the service runs with no TTY and no pinentry path. Before starting
+the broker, the operator primes claude-egress's gpg-agent with the
+passphrase using `prime-egress-broker`:
+
+```bash
+sudo prime-egress-broker
+```
+
+This:
+
+- Fetches `claude-config/egress-broker-gpg-passphrase` from the
+  operator's personal pass store.
+- Hands it to claude-egress's gpg-agent via
+  `gpg-preset-passphrase` (the passphrase never touches disk).
+- Seeds a sentinel ciphertext at `/home/claude-egress/.gnupg/sentinel.gpg`
+  on first run.
+- Verifies the priming by decrypting the sentinel.
+
+The service unit's `ExecStartPre=` runs the same sentinel decrypt
+on every start; if the cache is cold, systemd refuses to start the
+broker rather than have it serve 500s on every request.
+
+Re-priming is needed only when gpg-agent itself restarts (manual
+`gpgconf --kill gpg-agent`, host reboot, etc.). Restarting
+`claude-egress-broker.service` does not evaporate the agent cache.
