@@ -1,0 +1,32 @@
+# claude-egress-proxy.socket — socket-activated TCP listener for the
+# SNI-passthrough proxy (DEC-013, ClaudeConfig-ciw.3).
+#
+# Listens on host loopback. Runtime steering of sandbox HTTPS traffic
+# into this socket (iptables OUTPUT-chain REDIRECT, or per-mode
+# explicit wiring) is the next bead's job (ClaudeConfig-40s.15.5);
+# this unit just stands the listener up.
+#
+# Activation: systemd binds and listens; the proxy is spawned on first
+# connection. Allows the proxy to be restarted without dropping
+# in-flight connections.
+
+[Unit]
+Description=Claude egress SNI-passthrough proxy listener
+Documentation=file:///etc/claude-config/egress-proxy/README.md
+PartOf=claude-egress-proxy.service
+
+[Socket]
+# Loopback only — the proxy is reachable from within the host's network
+# namespace by anything that can connect to 127.0.0.1:8443. The
+# sandbox-side wiring decides whether that's via iptables REDIRECT or
+# an explicit HTTPS_PROXY-style configuration.
+ListenStream=127.0.0.1:8443
+# TCP sockets do not honor SocketUser/SocketGroup/SocketMode the way
+# AF_UNIX sockets do; access control lives in the network layer
+# (loopback bind + future iptables rule) and in the proxy's own SNI
+# allowlist. Keep Backlog modest — the proxy itself is single-binary
+# and lightweight.
+Backlog=64
+
+[Install]
+WantedBy=sockets.target

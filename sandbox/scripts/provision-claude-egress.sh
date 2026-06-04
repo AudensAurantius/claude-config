@@ -9,7 +9,8 @@
 # proxy will read at runtime, and scaffolds the broker's credential-
 # backend home (pass(1) + GPG, per DEC-029):
 #
-#   /etc/claude-config/egress-policy/   broker + proxy policy
+#   /etc/claude-config/egress-policy/   broker policy (credentialed)
+#   /etc/claude-config/egress-proxy/    proxy allowlist (uncredentialed)
 #   /etc/claude-config/credentials/     per-credential files (proxy/legacy)
 #   /home/claude-egress/                broker's home (pass + GPG)
 #   /home/claude-egress/.password-store empty pass store
@@ -95,6 +96,7 @@ if [ "$purge" -eq 1 ] && [ "$mode" != "uninstall" ]; then
 fi
 
 policy_dir="/etc/claude-config/egress-policy"
+proxy_policy_dir="/etc/claude-config/egress-proxy"
 creds_dir="/etc/claude-config/credentials"
 etc_root="/etc/claude-config"
 egress_home="/home/claude-egress"
@@ -163,6 +165,9 @@ do_install() {
 
     install -d -m 0750 -o root -g "$egress_user" "$policy_dir"
     echo "  ✓ ${policy_dir}/ (0750 root:${egress_user})"
+
+    install -d -m 0750 -o root -g "$egress_user" "$proxy_policy_dir"
+    echo "  ✓ ${proxy_policy_dir}/ (0750 root:${egress_user})"
 
     install -d -m 0750 -o root -g "$egress_user" "$creds_dir"
     echo "  ✓ ${creds_dir}/ (0750 root:${egress_user})"
@@ -313,7 +318,7 @@ do_uninstall() {
 
     if [ "$purge" -eq 1 ]; then
         # Operator opt-in to destroy policy + credential files + GPG/pass store.
-        for d in "$policy_dir" "$creds_dir" "$egress_home"; do
+        for d in "$policy_dir" "$proxy_policy_dir" "$creds_dir" "$egress_home"; do
             if [ -d "$d" ]; then
                 rm -rf "$d"
                 echo "  ✓ purged ${d}/"
@@ -326,7 +331,7 @@ do_uninstall() {
             echo "  ✓ removed empty ${etc_root}/"
         fi
     else
-        if [ -d "$policy_dir" ] || [ -d "$creds_dir" ] || [ -d "$egress_home" ]; then
+        if [ -d "$policy_dir" ] || [ -d "$proxy_policy_dir" ] || [ -d "$creds_dir" ] || [ -d "$egress_home" ]; then
             echo "  • policy/credential dirs and ${egress_home}/ preserved"
             echo "    (operator data including GPG keys and pass store);"
             echo "    re-run with --purge to remove them."

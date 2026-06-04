@@ -1,0 +1,15 @@
+# Egress proxy allowlist: Anthropic-managed hostnames the sandbox may
+# reach over uncredentialed TLS (SDK downloads, status checks, etc.).
+# The actual Messages API calls go through the credential broker
+# instead — see ../egress-policy/anthropic-api.yaml. Keep this entry
+# narrow: anything that goes through the proxy is unauthenticated and
+# implicitly trusted to be benign because we cannot inspect the
+# request body.
+#
+# See sandbox/egress-proxy/README.md for the schema reference.
+
+alias: anthropic-cdn
+hostnames:
+  - "*.anthropic.com"
+  - status.anthropic.com
+ports: [443]

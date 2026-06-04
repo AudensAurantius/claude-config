@@ -1,7 +1,7 @@
 # Systemd units for the claude-egress mediation services
 
 Source-of-truth unit files for the egress broker (DEC-013, DEC-029)
-and — once it lands — the SNI proxy (ClaudeConfig-ciw.3).
+and the SNI-passthrough proxy (DEC-013, DEC-030).
 
 ## Install
 
@@ -93,3 +93,51 @@ broker rather than have it serve 500s on every request.
 Re-priming is needed only when gpg-agent itself restarts (manual
 `gpgconf --kill gpg-agent`, host reboot, etc.). Restarting
 `claude-egress-broker.service` does not evaporate the agent cache.
+
+## SNI-passthrough proxy (DEC-013, DEC-030, ClaudeConfig-ciw.3)
+
+The proxy is the broker's uncredentialed sibling: it listens on
+`127.0.0.1:8443`, peeks the SNI from each inbound ClientHello,
+verifies it against `/etc/claude-config/egress-proxy/*.yaml`, and
+splices the bytes through to the upstream (or drops the connection).
+No TLS termination, no MITM, no CA cert inside the sandbox.
+
+Install:
+
+```bash
+just install-egress-proxy
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-egress-proxy.socket
+```
+
+Verify the listener:
+
+```bash
+systemctl status claude-egress-proxy.socket
+sudo journalctl -u claude-egress-proxy.service
+```
+
+End-to-end smoke (allowed SNI; assumes the shipped sample
+`anthropic-cdn.yaml` is installed):
+
+```bash
+openssl s_client -connect 127.0.0.1:8443 \
+    -servername api.anthropic.com </dev/null
+```
+
+Denied SNI — should close before any application bytes flow:
+
+```bash
+openssl s_client -connect 127.0.0.1:8443 \
+    -servername evil.example </dev/null
+```
+
+Hardening differences from the broker: no `GNUPGHOME` /
+`PASSWORD_STORE_DIR` (no credentials), no `ExecStartPre` health
+check (no agent cache to prime), `ProtectHome=true` (read-only is
+unnecessary; the proxy reads nothing from `/home`),
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (UNIX kept for
+sd_notify; INET for the inherited listener + outbound dials).
+
+ECH-driven sunset of the SNI peek is tracked separately as
+`ClaudeConfig-ciw.6`.

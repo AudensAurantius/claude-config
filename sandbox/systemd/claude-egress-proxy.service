@@ -1,0 +1,71 @@
+# claude-egress-proxy.service — SNI-passthrough proxy (DEC-013,
+# ClaudeConfig-ciw.3).
+#
+# Runs as claude-egress (same UID as the credential broker) but holds
+# no credentials, opens no pass store, and never talks to gpg-agent.
+# Its only job is to peek the SNI from each inbound ClientHello,
+# check the domain allowlist, and splice the connection through to
+# the named upstream. No TLS termination; no CA cert inside the
+# sandbox.
+
+[Unit]
+Description=Claude egress SNI-passthrough proxy
+Documentation=file:///etc/claude-config/egress-proxy/README.md
+Requires=claude-egress-proxy.socket
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/local/sbin/claude-egress-proxy \
+    --policy-dir /etc/claude-config/egress-proxy \
+    --listen-fds
+
+Type=notify
+NotifyAccess=main
+
+User=claude-egress
+Group=claude-egress
+WorkingDirectory=/home/claude-egress
+# No GNUPGHOME / PASSWORD_STORE_DIR — the proxy holds no credentials.
+
+# ── Containment ────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The proxy needs AF_UNIX for sd_notify, AF_INET / AF_INET6 for the
+# inherited listener + outbound dials.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Read-only access to policy files; everything else under /etc is invisible.
+ReadOnlyPaths=/etc/claude-config
+
+# Process resource caps — sized for the expected sandbox concurrency.
+# A handful of in-flight TLS streams at a time; tune up in a drop-in
+# if real workloads ever push past it.
+LimitNOFILE=4096
+TasksMax=64
+
+# Restart policy: come back if we crash, but slow enough that we don't
+# pin a CPU on a crashloop. StartLimit* lives in [Unit].
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

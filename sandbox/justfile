@@ -232,3 +232,61 @@ test-egress-broker:
 # Run go vet across the broker module.
 vet-egress-broker:
     cd sandbox/broker && go vet ./...
+
+# ── Egress SNI-passthrough proxy (Go production binary; ClaudeConfig-ciw.3) ──
+
+# Build the Go egress proxy binary into sandbox/proxy/bin/ (gitignored).
+build-egress-proxy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd sandbox/proxy
+    mkdir -p bin
+    go build -trimpath -ldflags='-s -w' -o bin/claude-egress-proxy ./cmd/claude-egress-proxy
+    sz=$(wc -c < bin/claude-egress-proxy)
+    echo "✓ built sandbox/proxy/bin/claude-egress-proxy (${sz} bytes)"
+
+# Install the Go egress proxy binary + systemd units. Sudo-mediated.
+install-egress-proxy: build-egress-proxy
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Installing claude-egress-proxy (will prompt for sudo) ..."
+    sudo install -d -m 0755 "{{sbin_dir}}"
+    sudo install -d -m 0755 "{{systemd_dir}}"
+    sudo install -m 0755 sandbox/proxy/bin/claude-egress-proxy  "{{sbin_dir}}/claude-egress-proxy"
+    sudo install -m 0644 sandbox/systemd/claude-egress-proxy.socket  "{{systemd_dir}}/claude-egress-proxy.socket"
+    sudo install -m 0644 sandbox/systemd/claude-egress-proxy.service "{{systemd_dir}}/claude-egress-proxy.service"
+    echo "✓ installed:"
+    echo "    {{sbin_dir}}/claude-egress-proxy"
+    echo "    {{systemd_dir}}/claude-egress-proxy.{socket,service}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Install at least one policy file under /etc/claude-config/egress-proxy/"
+    echo "     (sample: sandbox/egress-proxy/anthropic-cdn.yaml)"
+    echo "  2. sudo systemctl daemon-reload"
+    echo "  3. sudo systemctl enable --now claude-egress-proxy.socket"
+
+# Reverse install-egress-proxy (operator must `systemctl disable --now` first).
+uninstall-egress-proxy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Uninstalling claude-egress-proxy (will prompt for sudo) ..."
+    declare -a paths=(
+        "{{sbin_dir}}/claude-egress-proxy"
+        "{{systemd_dir}}/claude-egress-proxy.socket"
+        "{{systemd_dir}}/claude-egress-proxy.service"
+    )
+    for f in "${paths[@]}"; do
+        if [ -e "$f" ]; then
+            echo "  rm $f"
+            sudo rm -f "$f"
+        fi
+    done
+    echo "✓ claude-egress-proxy uninstalled (operator should run: sudo systemctl daemon-reload)"
+
+# Run Go test suite for the egress proxy.
+test-egress-proxy:
+    cd sandbox/proxy && go test ./...
+
+# Run go vet across the proxy module.
+vet-egress-proxy:
+    cd sandbox/proxy && go vet ./...

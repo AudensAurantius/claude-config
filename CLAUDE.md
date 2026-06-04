@@ -143,6 +143,9 @@ runtime — edits go through the repo, then `just install`.
 | `sandbox/scripts/claude-egress-broker-healthcheck.sh` | `/usr/local/sbin/claude-egress-broker-healthcheck` (via `just install-egress-broker`) | sudo install | ExecStartPre sentinel-decrypt; refuses broker start when agent cache is cold |
 | `sandbox/etc/gpg-agent.conf` | `/home/claude-egress/.gnupg/gpg-agent.conf` (via `just provision-egress`) | Install via provision script | Enables `allow-preset-passphrase` + long cache TTL for the primed agent |
 | `sandbox/systemd/claude-egress-broker.{socket,service}` | `/etc/systemd/system/` (via `just install-egress-broker`) | sudo install | Type=notify, socket-activated; operator substitutes CLAUDE_SESSION_UID via `systemctl edit`; service ExecStartPre validates primed gpg-agent |
+| `sandbox/proxy/` (Go source) → `sandbox/proxy/bin/claude-egress-proxy` | `/usr/local/sbin/claude-egress-proxy` (via `just install-egress-proxy`) | Build + sudo install | SNI-passthrough proxy (DEC-013, DEC-030); no credentials, peeks ClientHello + splices |
+| `sandbox/systemd/claude-egress-proxy.{socket,service}` | `/etc/systemd/system/` (via `just install-egress-proxy`) | sudo install | Type=notify; TCP socket-activated on 127.0.0.1:8443; runs as claude-egress with no GNUPGHOME |
+| `sandbox/egress-proxy/` (sample policy + README) | `/etc/claude-config/egress-proxy/` (operator-curated) | Operator-installed | Per-alias allowlist YAML; directory scaffolded by `provision-claude-egress.sh` |
 
 Behavior categories (see [DEC-004](DECISION_LOG.md#dec-004-installer-based-deployment-with-non-destructive-defaults-2026-05-04)):
 

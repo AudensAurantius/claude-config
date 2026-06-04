@@ -1949,3 +1949,76 @@ it; this DEC records the rejections.
 - Future ECH-driven obsolescence of SNI proxy (DEC-013 sunset path)
   doesn't touch the broker; ECH only affects the uncredentialed
   proxy side.
+
+---
+
+### DEC-030: SNI-passthrough proxy uses stdlib `crypto/tls` peek pattern (2026-06-04)
+
+**Context:** DEC-013 partitions egress into two services: the
+credential broker (terminates TLS, attaches a secret) and the
+SNI-passthrough proxy (peeks SNI, splices bytes through if
+allowlisted). The proxy never terminates TLS — by design, the
+sandbox sees no MITM CA cert and no plaintext intermediary on the
+uncredentialed path. ClaudeConfig-ciw.3 had to pick an
+implementation strategy for the ClientHello peek.
+
+**Options considered:**
+
+1. **stdlib `tls.Server(conn, &tls.Config{GetConfigForClient: ...})`**
+   — drive the TLS state machine just long enough for crypto/tls to
+   parse the ClientHello, capture the `*ClientHelloInfo`, and return
+   a sentinel error from the callback to abort the handshake before
+   any ServerHello is sent. Wrap the conn with a buffering reader so
+   the bytes already consumed can be replayed to the upstream.
+2. **inet.af/tcpproxy.** Brad Fitzpatrick's TCP-level proxy library
+   with built-in SNI routing.
+3. **Hand-rolled parser with `golang.org/x/crypto/cryptobyte`.** The
+   same low-level lib crypto/tls uses internally.
+4. **`paultag/sniff`.** Minimal ClientHello parser, third-party.
+
+**Decision:** Option 1 — stdlib only.
+
+**Rationale:**
+
+- Zero new go.mod dependencies. crypto/tls is already used by the
+  Go ecosystem at large; new code that needs the SNI peek doesn't
+  pull a new transitive surface.
+- Andrew Ayer's reference implementation
+  (https://www.agwa.name/blog/post/writing_an_sni_proxy_in_go)
+  fits the full peek/splice loop in ~115 LOC; the remaining ~185
+  LOC of ciw.3's 300-LOC budget covers policy load, hardened dial,
+  and structured logging.
+- crypto/tls already handles TLS 1.3 + GREASE + draft-23 quirks
+  correctly. A hand-rolled parser would need ongoing maintenance
+  against the same parser bug class crypto/tls's maintainers
+  already absorb.
+- Forward escape hatch: if scope expands (HTTP Host routing,
+  multi-protocol multiplexing, SOCKS5), migrating to tcpproxy is a
+  straight-line refactor — the peek-and-splice contract is the
+  same.
+
+**Alternatives rejected:**
+
+- *inet.af/tcpproxy.* Strictly more API surface than the ciw.3
+  scope needs (route tables, target abstractions). Reserve as the
+  upgrade target if the proxy ever grows beyond a single SNI
+  allowlist.
+- *Hand-rolled cryptobyte parser.* Reimplements work crypto/tls
+  already does correctly; no benefit at this scope.
+- *paultag/sniff.* Effectively abandoned (last commit 2020-02);
+  predates TLS 1.3 GREASE shakeout. Unsafe to depend on.
+
+**Consequences:**
+
+- `sandbox/proxy/internal/sniff/` owns the peek implementation
+  (~75 LOC). Wraps `net.Conn` with a buffering reader, drives
+  `tls.Server` with a single-shot `GetConfigForClient` callback,
+  returns `(*tls.ClientHelloInfo, prefix []byte, err error)`.
+- The proxy ignores any `SO_ORIGINAL_DST` an iptables redirect
+  might attach. It dials the upstream by handing the SNI hostname
+  itself to `net.Dialer.DialContext` — stdlib does Happy Eyeballs
+  internally — which preserves the anti-SNI-lying property DEC-013
+  requires.
+- ECH adoption breaks SNI inspection at the protocol level, not the
+  library level. The peek code's lifetime is bounded by ECH
+  rollout; `ClaudeConfig-ciw.6` tracks the sunset.
