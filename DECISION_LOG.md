@@ -2086,3 +2086,52 @@ tokens. Two findings forced a re-evaluation:
 - The denylist has **no allowlist counterpart** in claude-mem, so an
   "only these projects" posture is not expressible; if that is ever
   wanted, the per-project hook port above becomes the fallback.
+
+---
+
+### DEC-032: Escape-hatch credential sharing — policy formalization (2026-06-16)
+
+**Decision:** Formalize the escape-hatch credential-sharing mechanism
+introduced in DEC-010 with the following accepted implementation:
+
+- `sandbox/scripts/share-credential.sh` is the canonical option-a
+  implementation (static copy, chown, chmod 600, optional GPG
+  encryption-at-rest). It is the default path for all shared credentials.
+- `sandbox/profiles/SCHEMA.md` documents the option-b `shared_credentials
+  .bind_mounts:` profile field for credentials that rotate externally.
+  The `dec_ref` key is required on every bind-mount entry; the wrapper
+  rejects entries without it at session start.
+- The "documented usage example for Jira interim case" acceptance criterion
+  from ClaudeConfig-40s.11 is re-targeted: the sibling bead (40s.9) that
+  would have provided the live example is deferred due to lost BOCO Jira
+  access. The usage example in SCHEMA.md uses an SSH deploy key instead —
+  a structurally identical option-a case that does not depend on Jira
+  access being restored.
+
+**Audit chain:** The GPG signing chain (claude-session's key signed by
+hactar's personal key) is the recommended audit attestation. The signature
+records that hactar deliberately authorized claude-session to hold the
+credential. Enforcement remains optional at the script level — the
+structural friction lives in the DEC-entry requirement (DEC-010), not in
+the script's key-signature check.
+
+**Option-b `dec_ref` enforcement:** Binding without a `dec_ref` is a
+policy bypass. Enforcing it at the wrapper (reject unknown entries) keeps
+the DEC log as the authoritative gate rather than relying on convention.
+This is the minimum enforcement consistent with DEC-010's structural-
+friction intent.
+
+**Consequences:**
+
+- `sandbox/scripts/share-credential.sh` implements option (a) with
+  `--encrypt`, `--sandbox-user`, `--sandbox-home`, and `--dry-run` flags.
+  Exit codes distinguish failure modes (usage, source missing, mkdir,
+  copy, chown/chmod, GPG) for scripted callers.
+- `sandbox/profiles/SCHEMA.md` is the single source of truth for the
+  profile YAML schema; the default.yaml header comment defers to it.
+- When 40s.9 or a successor Jira bead is eventually actioned, its DEC
+  entry will reference DEC-010 + DEC-032 and populate the Jira-specific
+  usage example in SCHEMA.md.
+
+**Cross-references:** DEC-008 (tier-1 policy), DEC-010 (escape-hatch
+design), ClaudeConfig-40s.11 (implementation bead).
